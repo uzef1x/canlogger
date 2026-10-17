@@ -123,6 +123,7 @@ function render(d) {
     return `<div class="card ${cls}"><div class="t"><span><span class="dot"></span>Board ${b.board}</span>
       <span class="badge">boot ${b.boot_id.toString(16)}</span></div>
       <div class="sub">last upload ${fmtAge(b.last_rx_age)}</div>
+      <div class="sub">${b.ssid ? "Network " + esc(b.ssid) : "Network unknown (needs new firmware)"}${b.ip ? " · " + esc(b.ip) : ""}</div>
       <div class="sub">${rssiBars(b.rssi)} &nbsp;${rssiText(b.rssi)}</div>
       <div class="sub">${b.batches} batches · dropped ${b.dropped}</div></div>`;
   }).join("") : `<div class="empty">No board has uploaded yet.</div>`;

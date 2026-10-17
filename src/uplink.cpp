@@ -36,6 +36,24 @@ static void send_vin_result() {
   Serial.printf("[vin] %s %s (%s)\n", ok ? "read" : "FAILED", vin, note);
 }
 
+// Tell the server which network we are on (every 60 s, so a server restart relearns it).
+static void send_hello() {
+  static uint32_t last = 0;
+  if (last && millis() - last < 60000) return;
+  last = millis();
+  String url = SERVER_URL;
+  url.replace("/ingest", "/hello");
+  String body = "board=" + String(LOGGER_BOARD_ID) + "&ssid=" + WiFi.SSID() +
+                "&ip=" + WiFi.localIP().toString() + "&bssid=" + WiFi.BSSIDstr();
+  HTTPClient http;
+  http.setTimeout(3000);
+  if (http.begin(url)) {
+    http.addHeader("Content-Type", "text/plain");
+    http.POST((uint8_t *)body.c_str(), body.length());
+    http.end();
+  }
+}
+
 static void uplink_task(void *) {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
@@ -43,7 +61,7 @@ static void uplink_task(void *) {
   uint32_t backoff = 500;
 
   for (;;) {
-    if (uplink_connected()) send_vin_result();
+    if (uplink_connected()) { send_hello(); send_vin_result(); }
     if (!uplink_connected() || ring_used() == 0) {
       vTaskDelay(pdMS_TO_TICKS(200));
       continue;

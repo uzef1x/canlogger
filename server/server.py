@@ -41,6 +41,8 @@ def init_db(path):
     # vin/label event at or before their time (one car per logger setup).
     c.execute("""CREATE TABLE IF NOT EXISTS events(
         t REAL NOT NULL, board INTEGER, kind TEXT NOT NULL, value TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS devices(
+        board INTEGER PRIMARY KEY, ssid TEXT, ip TEXT, bssid TEXT, hello_t REAL, peer TEXT)""")
     if "note" not in [r[1] for r in c.execute("PRAGMA table_info(events)")]:
         c.execute("ALTER TABLE events ADD COLUMN note TEXT")
     c.execute("""CREATE VIEW IF NOT EXISTS v_frames AS
@@ -69,7 +71,10 @@ def _status():
                GROUP BY board"""):
         boards[b] = {"board": b, "last_rx_age": now - rx, "boot_id": boot,
                      "dropped": dropped, "batches": nb, "rssi": rssi,
-                     "vin_pending": b in pending_cmd}
+                     "vin_pending": b in pending_cmd, "ssid": None, "ip": None}
+    for b, ssid, ip, peer in db.execute("SELECT board, ssid, ip, peer FROM devices"):
+        if b in boards:
+            boards[b]["ssid"], boards[b]["ip"] = ssid or None, ip or peer
     chans = {}
     for b, brd in CHANNELS.items():
         for ci, letter in enumerate("AB"):
@@ -114,6 +119,16 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
+        if u.path == "/hello":                     # board says which WiFi network it is on
+            q = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8", "replace"))
+            g = lambda k: q.get(k, [""])[0][:64]
+            with db_lock:
+                db.execute("""INSERT INTO devices(board,ssid,ip,bssid,hello_t,peer) VALUES(?,?,?,?,?,?)
+                              ON CONFLICT(board) DO UPDATE SET ssid=excluded.ssid, ip=excluded.ip,
+                              bssid=excluded.bssid, hello_t=excluded.hello_t, peer=excluded.peer""",
+                           (int(g("board") or 0), g("ssid"), g("ip"), g("bssid"), time.time(), self.client_address[0]))
+                db.commit()
+            return self._send(200, b"ok", "text/plain")
         if u.path == "/vin":                       # board reports the result of a VIN read
             q = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("ascii", "replace"))
             board, ok, vin = int(q.get("board", ["0"])[0]), q.get("ok", ["0"])[0] == "1", q.get("vin", [""])[0]
