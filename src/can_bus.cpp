@@ -171,7 +171,7 @@ static bool     g_vin_known = false;
 static bool     g_auto = false;
 static uint8_t  g_auto_tries = 0;
 static uint32_t g_auto_next = 3000;      // not before 3 s after boot
-static constexpr uint8_t  AUTO_MAX_TRIES = 5;
+static constexpr uint8_t  AUTO_MAX_TRIES = 10;
 static constexpr uint32_t AUTO_RETRY_MS  = 10000;
 
 static void vin_set_mode(twai_mode_t m) {
@@ -336,7 +336,7 @@ void canbus_vin_feed(const LogRecord &r) {
     g_vin_sn = 1;
     const uint8_t fc[8] = {0x30, 0x00, 0x00, 0, 0, 0, 0, 0};    // clear to send
     if (!vin_tx(VIN_REQ_ID, fc)) { vin_next("txfail"); return; }
-    g_vin_deadline = millis() + VIN_TRY_MS;
+    g_vin_deadline = millis() + 4000;   // other tools take about a minute to read the VIN
     g_vin_state = V_WAIT_CF;
     return;
   }
