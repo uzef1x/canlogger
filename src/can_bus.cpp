@@ -138,10 +138,13 @@ struct VinCand {
   uint8_t  req[8];
   uint8_t  hdr[3];       // expected positive-reply header
   uint8_t  hdr_len;
+  bool     sess;         // open a diagnostic session (10 C0) first
 };
 static const VinCand CANDS[] = {
-  {'S', {0x02, 0x21, 0x81, 0, 0, 0, 0, 0},       {0x61, 0x81, 0},       2},
-  {'T', {0x03, 0x22, 0xF1, 0x90, 0, 0, 0, 0},    {0x62, 0xF1, 0x90},    3},
+  // D: plain 21 81, as in the ZE1 (2018) polling list of the leaf_can_bus_messages project.
+  // S: the same after a 10 C0 session, which the early ZE0 needs (it refuses D with NRC 0x80).
+  {'D', {0x02, 0x21, 0x81, 0, 0, 0, 0, 0},       {0x61, 0x81, 0},       2, false},
+  {'S', {0x02, 0x21, 0x81, 0, 0, 0, 0, 0},       {0x61, 0x81, 0},       2, true},
 };
 static constexpr uint8_t N_CANDS = sizeof(CANDS) / sizeof(CANDS[0]);
 static constexpr uint32_t VIN_REQ_ID = 0x797;
@@ -277,6 +280,12 @@ void canbus_vin_tick() {
     if ((int32_t)(now - g_vin_send_at) < 0) return;
     g_sess_resends = 0;
     g_sess_sent = now;
+    if (!CANDS[g_vin_cand].sess) {
+      if (!vin_tx(VIN_REQ_ID, CANDS[g_vin_cand].req)) { vin_next("txfail"); return; }
+      g_vin_deadline = now + 3000;
+      g_vin_state = V_WAIT_FF;
+      return;
+    }
     if (!vin_tx(VIN_REQ_ID, SESS_OPEN)) { vin_next("txfail"); return; }
     g_sess_open = true;               // closed again on every exit path
     g_vin_deadline = now + VIN_SESS_MS;

@@ -18,10 +18,11 @@ static void capture_task(void *) {
   LogRecord r;
   uint32_t rate_ms = 0, rate_last = 0;
   for (;;) {
-    // CAR-CAN counts as alive at >= 20 frames/s; the VIN read waits for that.
+    // CAR-CAN counts as alive at >= 20 frames/s. The ZE1's OBD bus is silent until it is
+    // asked, so after 15 s the VIN request goes out on a quiet bus too.
     if (millis() - rate_ms >= 1000) {
       rate_ms = millis();
-      canbus_vin_auto(g_count[CH_B] - rate_last >= 20);
+      canbus_vin_auto(g_count[CH_B] - rate_last >= 20 || millis() > 15000);
       rate_last = g_count[CH_B];
     }
     canbus_poll();
