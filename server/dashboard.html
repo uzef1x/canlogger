@@ -73,6 +73,15 @@ const esc = s => String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;"
 let sel = "";
 $("flt").onchange = e => { sel = e.target.value; };
 
+// 5-segment signal icon: bars light up at -85, -75, -67, -60, -50 dBm.
+function rssiBars(r) {
+  const on = (r == null || r === 0) ? 0 : [-85, -75, -67, -60, -50].filter(t => r >= t).length;
+  const bars = [0, 1, 2, 3, 4].map(i => {
+    const h = 5 + i * 3;
+    return `<rect x="${i * 5}" y="${17 - h}" width="3.5" height="${h}" rx="0.8" fill="${i < on ? "var(--fg)" : "var(--line)"}"/>`;
+  }).join("");
+  return `<svg width="24" height="17" viewBox="0 0 24 17" role="img" aria-label="WiFi signal ${on} of 5" style="vertical-align:-3px">${bars}</svg>`;
+}
 const rssiText = r => r == null ? "n/a" : r === 0 ? "offline" :
   `${r} dBm (${r >= -60 ? "excellent" : r >= -70 ? "good" : r >= -80 ? "fair" : "weak"})`;
 
@@ -101,7 +110,7 @@ function renderCar(c, boards) {
   $("vinAge").textContent = c.vin_age == null ? "" : fmtAge(c.vin_age);
   $("vinNote").textContent = pending ? "waiting for the board to read it…" :
     (c.last_fail_age != null && (c.vin_age == null || c.last_fail_age < c.vin_age)) ?
-    "last read failed (car must be on; no reply)" : "";
+    "last read failed: " + (c.last_note || "no detail") : "";
   $("vinBtn").disabled = pending || c.vin_board == null;
   if (document.activeElement !== $("lbl") && c.label != null && $("lbl").value !== c.label) $("lbl").value = c.label;
 }
@@ -114,7 +123,7 @@ function render(d) {
     return `<div class="card ${cls}"><div class="t"><span><span class="dot"></span>Board ${b.board}</span>
       <span class="badge">boot ${b.boot_id.toString(16)}</span></div>
       <div class="sub">last upload ${fmtAge(b.last_rx_age)}</div>
-      <div class="sub">WiFi ${rssiText(b.rssi)}</div>
+      <div class="sub">${rssiBars(b.rssi)} &nbsp;${rssiText(b.rssi)}</div>
       <div class="sub">${b.batches} batches · dropped ${b.dropped}</div></div>`;
   }).join("") : `<div class="empty">No board has uploaded yet.</div>`;
 

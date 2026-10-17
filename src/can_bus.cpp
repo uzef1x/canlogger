@@ -127,20 +127,42 @@ bool canbus_receive(uint8_t ch, LogRecord &out) {
 }
 
 // ── VIN read ─────────────────────────────────────────────────────────────────
-static constexpr uint32_t VIN_REQ_ID = 0x797;
-static constexpr uint32_t VIN_RSP_ID = 0x79A;
-static constexpr uint32_t VIN_TIMEOUT_MS = 1500;
+// Tries read-only VIN requests in turn until one returns 17 valid characters.
+// None of them is confirmed for the LEAF; every try and reply is in the log.
+//   A  standard OBD-II mode 09 PID 02, functional request 0x7DF, any 0x7E8-0x7EF reply
+//   B  UDS ReadDataByIdentifier F190 to 0x797 (charger/PDM), reply 0x79A
+//   C  Nissan service 21 PID 81 to 0x797, reply 0x79A (the OVMS method; refused with
+//      NRC 0x80 on the first car tried)
+struct VinCand {
+  char     tag;
+  uint32_t tx_id;
+  uint8_t  req[8];
+  uint32_t rsp_lo, rsp_hi;
+  uint8_t  hdr[3];       // expected positive-reply header
+  uint8_t  hdr_len;
+  bool     opt_count;    // mode 09 may carry a 1-byte item count after the header
+};
+static const VinCand CANDS[] = {
+  {'A', 0x7DF, {0x02, 0x09, 0x02, 0, 0, 0, 0, 0}, 0x7E8, 0x7EF, {0x49, 0x02, 0},    2, true},
+  {'B', 0x797, {0x03, 0x22, 0xF1, 0x90, 0, 0, 0, 0}, 0x79A, 0x79A, {0x62, 0xF1, 0x90}, 3, false},
+  {'C', 0x797, {0x02, 0x21, 0x81, 0, 0, 0, 0, 0}, 0x79A, 0x79A, {0x61, 0x81, 0},    2, false},
+};
+static constexpr uint8_t N_CANDS = sizeof(CANDS) / sizeof(CANDS[0]);
+static constexpr uint32_t VIN_TRY_MS = 1000;
 
 enum VinState : uint8_t { V_IDLE, V_SEND, V_WAIT_FF, V_WAIT_CF };
 static volatile bool g_vin_req = false;
 static VinState g_vin_state = V_IDLE;
+static uint8_t  g_vin_cand = 0;
 static uint32_t g_vin_deadline = 0;
 static uint8_t  g_vin_buf[32];
 static uint16_t g_vin_expected = 0, g_vin_got = 0;
 static uint8_t  g_vin_sn = 1;
+static uint32_t g_vin_fc_id = 0;
 static volatile bool g_vin_done = false;
 static bool     g_vin_ok = false;
 static char     g_vin_text[18];
+static char     g_vin_note[48];
 
 static void vin_set_mode(twai_mode_t m) {
   twai_stop();
@@ -148,13 +170,19 @@ static void vin_set_mode(twai_mode_t m) {
   beginBusB(m);
 }
 
-static bool vin_tx(const uint8_t *d) {
+static bool vin_tx(uint32_t id, const uint8_t *d) {
   twai_message_t m = {};
-  m.identifier = VIN_REQ_ID;
+  m.identifier = id;
   m.ss = 1;                 // single shot: never retransmit
   m.data_length_code = 8;
   memcpy(m.data, d, 8);
   return twai_transmit(&m, pdMS_TO_TICKS(20)) == ESP_OK;
+}
+
+static void vin_note(const char *what) {
+  size_t n = strlen(g_vin_note);
+  snprintf(g_vin_note + n, sizeof(g_vin_note) - n, "%s%c-%s", n ? "_" : "",
+           CANDS[g_vin_cand].tag, what);
 }
 
 static void vin_finish(bool ok) {
@@ -164,6 +192,13 @@ static void vin_finish(bool ok) {
   vin_set_mode(TWAI_MODE_LISTEN_ONLY);
 }
 
+// This candidate failed: note why and move on, or finish if none are left.
+static void vin_next(const char *why) {
+  vin_note(why);
+  if (++g_vin_cand >= N_CANDS) { vin_finish(false); return; }
+  g_vin_state = V_SEND;
+}
+
 void canbus_vin_request() { g_vin_req = true; }
 
 void canbus_vin_tick() {
@@ -171,39 +206,55 @@ void canbus_vin_tick() {
   if (g_vin_state == V_IDLE) {
     if (!g_vin_req) return;
     g_vin_req = false;
+    g_vin_cand = 0;
+    g_vin_note[0] = 0;
+    vin_set_mode(TWAI_MODE_NORMAL);
     g_vin_state = V_SEND;
   }
   if (g_vin_state == V_SEND) {
-    vin_set_mode(TWAI_MODE_NORMAL);
-    const uint8_t req[8] = {0x02, 0x21, 0x81, 0, 0, 0, 0, 0};   // single frame, service 21, PID 81
-    if (!vin_tx(req)) { vin_finish(false); return; }
-    g_vin_deadline = now + VIN_TIMEOUT_MS;
+    const VinCand &c = CANDS[g_vin_cand];
+    if (!vin_tx(c.tx_id, c.req)) { vin_next("txfail"); return; }
+    g_vin_deadline = now + VIN_TRY_MS;
     g_vin_state = V_WAIT_FF;
     return;
   }
-  if ((int32_t)(now - g_vin_deadline) > 0) vin_finish(false);
+  if ((int32_t)(now - g_vin_deadline) > 0) vin_next("timeout");
 }
 
 void canbus_vin_feed(const LogRecord &r) {
   if (g_vin_state != V_WAIT_FF && g_vin_state != V_WAIT_CF) return;
-  if (r.id != VIN_RSP_ID || (r.flags & FLAG_EXT)) return;
+  const VinCand &c = CANDS[g_vin_cand];
+  if (r.id < c.rsp_lo || r.id > c.rsp_hi || (r.flags & FLAG_EXT)) return;
   const uint8_t pci = r.data[0] & 0xF0;
+
   if (g_vin_state == V_WAIT_FF) {
-    if (pci == 0x00) {                       // single frame: negative response or too short
-      vin_finish(false);
+    if (pci == 0x00) {                          // single frame
+      if (r.data[1] == 0x7F) {
+        if (r.data[3] == 0x78) { g_vin_deadline = millis() + 2000; return; }   // response pending
+        char w[8];
+        snprintf(w, sizeof(w), "nrc%02X", r.data[3]);
+        vin_next(w);
+      } else {
+        vin_next("short");
+      }
       return;
     }
     if (pci != 0x10) return;
     g_vin_expected = ((r.data[0] & 0x0F) << 8) | r.data[1];
-    if (g_vin_expected < 19 || g_vin_expected > sizeof(g_vin_buf)) { vin_finish(false); return; }
+    if (g_vin_expected < 19 || g_vin_expected > sizeof(g_vin_buf)) { vin_next("badlen"); return; }
     memcpy(g_vin_buf, r.data + 2, 6);
     g_vin_got = 6;
     g_vin_sn = 1;
-    const uint8_t fc[8] = {0x30, 0x00, 0x00, 0, 0, 0, 0, 0};    // flow control: clear to send
-    if (!vin_tx(fc)) { vin_finish(false); return; }
+    // Flow control goes to the responder's physical request ID: the request ID for a
+    // physical request, reply-ID minus 8 for the functional 0x7DF request.
+    g_vin_fc_id = (c.tx_id == 0x7DF) ? r.id - 8 : c.tx_id;
+    const uint8_t fc[8] = {0x30, 0x00, 0x00, 0, 0, 0, 0, 0};    // clear to send
+    if (!vin_tx(g_vin_fc_id, fc)) { vin_next("txfail"); return; }
+    g_vin_deadline = millis() + VIN_TRY_MS;
     g_vin_state = V_WAIT_CF;
     return;
   }
+
   if (pci != 0x20 || (r.data[0] & 0x0F) != (g_vin_sn & 0x0F)) return;
   const uint16_t take = min<uint16_t>(7, g_vin_expected - g_vin_got);
   memcpy(g_vin_buf + g_vin_got, r.data + 1, take);
@@ -211,22 +262,28 @@ void canbus_vin_feed(const LogRecord &r) {
   g_vin_sn++;
   if (g_vin_got < g_vin_expected) return;
 
-  // Reply = 0x61 0x81 + 17 ASCII VIN characters (+ padding).
-  bool ok = g_vin_buf[0] == 0x61 && g_vin_buf[1] == 0x81;
+  bool ok = memcmp(g_vin_buf, c.hdr, c.hdr_len) == 0;
+  uint8_t off = c.hdr_len;
+  if (ok && c.opt_count && g_vin_buf[off] == 0x01) off++;
+  if (ok && off + 17 > g_vin_expected) ok = false;
+  char text[18] = {0};
   for (int i = 0; i < 17 && ok; i++) {
-    const uint8_t c = g_vin_buf[2 + i];
-    g_vin_text[i] = (char)c;
-    if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z'))) ok = false;
+    const uint8_t ch = g_vin_buf[off + i];
+    text[i] = (char)ch;
+    if (!((ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z'))) ok = false;
   }
-  g_vin_text[17] = 0;
-  vin_finish(ok);
+  if (!ok) { vin_next("bad"); return; }
+  memcpy(g_vin_text, text, 18);
+  vin_note("ok");
+  vin_finish(true);
 }
 
-bool canbus_vin_take(char out[18], bool &ok) {
+bool canbus_vin_take(char out[18], bool &ok, char note[48]) {
   if (!g_vin_done) return false;
   g_vin_done = false;
   ok = g_vin_ok;
   memcpy(out, g_vin_text, 18);
+  memcpy(note, g_vin_note, 48);
   if (!ok) out[0] = 0;
   return true;
 }

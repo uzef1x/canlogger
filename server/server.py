@@ -41,6 +41,8 @@ def init_db(path):
     # vin/label event at or before their time (one car per logger setup).
     c.execute("""CREATE TABLE IF NOT EXISTS events(
         t REAL NOT NULL, board INTEGER, kind TEXT NOT NULL, value TEXT)""")
+    if "note" not in [r[1] for r in c.execute("PRAGMA table_info(events)")]:
+        c.execute("ALTER TABLE events ADD COLUMN note TEXT")
     c.execute("""CREATE VIEW IF NOT EXISTS v_frames AS
         SELECT f.*,
           (SELECT value FROM events e WHERE e.kind='vin'   AND e.t<=f.t ORDER BY e.t DESC LIMIT 1) AS vin,
@@ -91,12 +93,12 @@ def _status():
                "dlc": d, "data": bytes(x).hex(" ")}
               for t, b, c, i, d, x in db.execute(
                   "SELECT t, board, ch, id, dlc, data FROM frames ORDER BY t DESC LIMIT 40")]
-    car = {"vin": None, "vin_age": None, "label": None, "last_fail_age": None}
-    for kind, t, v in db.execute(
-            """SELECT kind, MAX(t), value FROM events GROUP BY kind"""):
-        if kind == "vin": car["vin"], car["vin_age"] = v, now - t
+    car = {"vin": None, "vin_age": None, "label": None, "last_fail_age": None, "last_note": None}
+    for kind, t, v, note in db.execute(
+            """SELECT kind, MAX(t), value, note FROM events GROUP BY kind"""):
+        if kind == "vin": car["vin"], car["vin_age"], car["vin_note"] = v, now - t, note
         elif kind == "label": car["label"] = v
-        elif kind == "vin_fail": car["last_fail_age"] = now - t
+        elif kind == "vin_fail": car["last_fail_age"], car["last_note"] = now - t, note
     car["vin_board"] = next((int(b) for b, i in CHANNELS.items() if i.get("vin_channel")), None)
     return {"car": car, "now": now, "window": WINDOW, "boards": sorted(boards.values(), key=lambda x: x["board"]),
             "channels": [chans[k] for k in sorted(chans)], "ids": ids, "recent": recent}
@@ -115,9 +117,10 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/vin":                       # board reports the result of a VIN read
             q = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("ascii", "replace"))
             board, ok, vin = int(q.get("board", ["0"])[0]), q.get("ok", ["0"])[0] == "1", q.get("vin", [""])[0]
+            note = q.get("note", [""])[0][:60]
             with db_lock:
-                db.execute("INSERT INTO events VALUES(?,?,?,?)",
-                           (time.time(), board, "vin" if ok else "vin_fail", vin if ok else None))
+                db.execute("INSERT INTO events(t,board,kind,value,note) VALUES(?,?,?,?,?)",
+                           (time.time(), board, "vin" if ok else "vin_fail", vin if ok else None, note))
                 db.commit()
             return self._send(200, b"ok", "text/plain")
         if u.path == "/api/read_vin":              # dashboard button: ask a board to read the VIN once
@@ -130,7 +133,7 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/api/label":                 # free-text car label
             label = parse_qs(u.query).get("text", [""])[0][:60]
             with db_lock:
-                db.execute("INSERT INTO events VALUES(?,?,?,?)", (time.time(), None, "label", label))
+                db.execute("INSERT INTO events(t,board,kind,value) VALUES(?,?,?,?)", (time.time(), None, "label", label))
                 db.commit()
             return self._send(200, b'{"ok":true}')
         if u.path != "/ingest":

@@ -19,13 +19,13 @@ uint32_t uplink_sent() { return g_sent; }
 // Server tells us what to do in the body of its /ingest reply ("ok" or "ok vin").
 // The VIN result goes to <server>/vin as plain text.
 static void send_vin_result() {
-  char vin[18];
+  char vin[18], note[48];
   bool ok;
-  if (!canbus_vin_take(vin, ok)) return;
+  if (!canbus_vin_take(vin, ok, note)) return;
   String url = SERVER_URL;
   url.replace("/ingest", "/vin");
-  char body[64];
-  snprintf(body, sizeof(body), "board=%d&ok=%d&vin=%s", LOGGER_BOARD_ID, ok ? 1 : 0, vin);
+  char body[128];
+  snprintf(body, sizeof(body), "board=%d&ok=%d&vin=%s&note=%s", LOGGER_BOARD_ID, ok ? 1 : 0, vin, note);
   HTTPClient http;
   http.setTimeout(5000);
   if (http.begin(url)) {
@@ -33,7 +33,7 @@ static void send_vin_result() {
     http.POST((uint8_t *)body, strlen(body));
     http.end();
   }
-  Serial.printf("[vin] %s %s\n", ok ? "read" : "FAILED", vin);
+  Serial.printf("[vin] %s %s (%s)\n", ok ? "read" : "FAILED", vin, note);
 }
 
 static void uplink_task(void *) {
