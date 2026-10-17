@@ -157,6 +157,9 @@ static VinState g_vin_state = V_IDLE;
 static uint8_t  g_vin_cand = 0;
 static uint32_t g_vin_deadline = 0;
 static bool     g_sess_open = false;
+static uint32_t g_vin_send_at = 0;     // earliest time to transmit (bus sync after the mode switch)
+static uint32_t g_sess_sent = 0;       // when 10 C0 was last sent
+static uint8_t  g_sess_resends = 0;
 static uint8_t  g_vin_buf[32];
 static uint16_t g_vin_expected = 0, g_vin_got = 0;
 static uint8_t  g_vin_sn = 1;
@@ -263,13 +266,25 @@ void canbus_vin_tick() {
     g_vin_cand = 0;
     g_vin_note[0] = 0;
     vin_set_mode(TWAI_MODE_NORMAL);
+    g_vin_send_at = now + 150;
+    g_sess_resends = 0;
     g_vin_state = V_SEND;
   }
   if (g_vin_state == V_SEND) {
+    if ((int32_t)(now - g_vin_send_at) < 0) return;
+    g_sess_resends = 0;
+    g_sess_sent = now;
     if (!vin_tx(VIN_REQ_ID, SESS_OPEN)) { vin_next("txfail"); return; }
     g_sess_open = true;               // closed again on every exit path
     g_vin_deadline = now + VIN_SESS_MS;
     g_vin_state = V_WAIT_SESS;
+    return;
+  }
+  // Observed: the first frame after the mode switch gets no answer, a repeat does.
+  if (g_vin_state == V_WAIT_SESS && g_sess_resends < 2 && (int32_t)(now - g_sess_sent) > 400) {
+    g_sess_resends++;
+    g_sess_sent = now;
+    vin_tx(VIN_REQ_ID, SESS_OPEN);
     return;
   }
   if ((int32_t)(now - g_vin_deadline) > 0)
