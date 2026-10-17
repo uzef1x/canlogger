@@ -33,10 +33,17 @@ source and is paywalled; verify against it or by meter before connecting.
   read directly: isolated transceiver per port; **fixed 120 ohm across CANH-CANL on both ports
   (RZ2 port A, RZ1 port B), no jumper/switch**; transceiver ground pin (CANG) goes to the SGND net;
   DGND is the TVS return, tied to SGND only via 1 Mohm || 1 nF.
-- **DIP switch:** the [Battery Emulator hardware page](https://dalathegreat.github.io/Battery-Emulator-Wiki/hardware/lilygo_t_2can/)
-  says "The CAN-FD needs the DIP switches setting correctly. You need to enable DIP switch 2."
-  Third-party, picture not readable here, and LilyGo's own wiki does not mention it. **Check
-  this on the physical boards: if channel A hears nothing, this is the first suspect.**
+- **DIP switch (corrected after reading the schematic and photographing the board):** the
+  Battery Emulator page says to "enable DIP switch 2" for CAN-FD, but it is third-party and
+  its reason is unstated. In the LilyGo V1.0 schematic the two switches only connect ESP32
+  IO3 to (1) the MCP2518FD's INT1 pin and (2) the expansion-header IO3 net. Neither is on the
+  SPI or INT# path the logger uses, so the switch positions should not affect logging.
+  Not yet proven on a live bus.
+- **Hardware revision:** the schematic is V1.0 and shows a TD501MCAN transceiver module. The
+  boards in hand (own photos, date codes 2619/2622/2623) carry **TD501MCANFD** modules, so
+  they are a newer revision than the schematic and may differ in details.
+- **Termination confirmed on the real board:** a `121` (120 ohm) resistor is visible beside
+  the common-mode choke of both CAN ports. Fixed, no switch.
 - Power input range: not stated by LilyGo's wiki. The same page recommends 12 V instead of 5 V
   if CAN errors appear.
 
