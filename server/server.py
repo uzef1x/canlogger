@@ -8,7 +8,7 @@ GET  /         live dashboard (server/dashboard.html, polls /api/status)
 GET  /api/status  boards, channels, live IDs and recent frames as JSON
 Run:  python3 server.py [--port 8000] [--db canlog.db]
 """
-import argparse, json, os, sqlite3, struct, time
+import argparse, json, os, sqlite3, struct, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -19,6 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CHANNELS = json.load(open(os.path.join(HERE, "channels.json")))
 
 db = None
+db_lock = threading.Lock()   # one shared sqlite connection: serialise every use
 
 
 def init_db(path):
@@ -40,6 +41,11 @@ WINDOW = 10.0   # seconds used for rates and the live-ID table
 
 
 def status():
+    with db_lock:
+        return _status()
+
+
+def _status():
     now = time.time()
     since = now - WINDOW
     boards = {}
@@ -99,9 +105,10 @@ class H(BaseHTTPRequestHandler):
         for i in range(count):
             ts, fid, ch, flags, dlc, _, data = REC.unpack_from(body, HDR.size + i * REC.size)
             rows.append((rx - (t_send - ts) / 1e6, board, boot_id, ch, fid, flags, dlc, data[:dlc]))
-        db.executemany("INSERT INTO frames VALUES(?,?,?,?,?,?,?,?)", rows)
-        db.execute("INSERT INTO batches VALUES(?,?,?,?,?)", (rx, board, boot_id, count, dropped))
-        db.commit()
+        with db_lock:
+            db.executemany("INSERT INTO frames VALUES(?,?,?,?,?,?,?,?)", rows)
+            db.execute("INSERT INTO batches VALUES(?,?,?,?,?)", (rx, board, boot_id, count, dropped))
+            db.commit()
         self._send(200, b"ok", "text/plain")
 
     def do_GET(self):
@@ -109,8 +116,10 @@ class H(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         if u.path == "/stats":
             out = []
-            for board, ch, n, last in db.execute(
-                    "SELECT board, ch, COUNT(*), MAX(t) FROM frames GROUP BY board, ch"):
+            with db_lock:
+                stat_rows = db.execute(
+                    "SELECT board, ch, COUNT(*), MAX(t) FROM frames GROUP BY board, ch").fetchall()
+            for board, ch, n, last in stat_rows:
                 info = CHANNELS.get(str(board), {}).get("AB"[ch], {})
                 out.append({"board": board, "ch": "AB"[ch], "name": info.get("name"),
                             "fd_capable": info.get("fd"), "frames": n, "last": last})
@@ -123,8 +132,10 @@ class H(BaseHTTPRequestHandler):
                     conds.append(f"{col}=?"); args.append(int(q[k][0]))
             if conds: sql += " WHERE " + " AND ".join(conds)
             sql += " ORDER BY t DESC LIMIT ?"; args.append(min(int(q.get("limit", ["100"])[0]), 5000))
+            with db_lock:
+                got = db.execute(sql, args).fetchall()
             rows = [{"t": t, "board": b, "ch": "AB"[c], "id": f"0x{i:X}", "ext": bool(f & 1),
-                     "dlc": d, "data": bytes(x).hex()} for t, b, c, i, f, d, x in db.execute(sql, args)]
+                     "dlc": d, "data": bytes(x).hex()} for t, b, c, i, f, d, x in got]
             return self._send(200, json.dumps(rows).encode())
         if u.path == "/api/status":
             return self._send(200, json.dumps(status()).encode())
