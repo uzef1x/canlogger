@@ -30,4 +30,5 @@ void canbus_vin_tick();                             // capture task, every loop
 void canbus_vin_feed(const LogRecord &r);           // capture task, each CH_B frame
 // Returns true once when a result is ready. ok=false means no candidate worked;
 // note says why for each, e.g. "A-timeout_B-nrc31_C-nrc80".
+bool canbus_tx_pop(LogRecord &r);                   // capture task: frames this logger transmitted
 bool canbus_vin_take(char vin[18], bool &ok, char note[48]);

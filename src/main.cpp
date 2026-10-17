@@ -38,6 +38,11 @@ static void capture_task(void *) {
         any = true;
       }
     }
+    while (canbus_tx_pop(r)) {
+      r.ts_us = (uint64_t)esp_timer_get_time();
+      ring_push(r);
+      any = true;
+    }
     if (!any) vTaskDelay(1);
   }
 }

@@ -149,6 +149,7 @@ static constexpr uint32_t VIN_RSP_ID = 0x79A;
 static const uint8_t SESS_OPEN[8]  = {0x02, 0x10, 0xC0, 0, 0, 0, 0, 0};
 static const uint8_t SESS_CLOSE[8] = {0x02, 0x10, 0x81, 0, 0, 0, 0, 0};
 static constexpr uint32_t VIN_TRY_MS = 1000;
+static constexpr uint32_t VIN_SESS_MS = 3000;   // the module answers 10 C0 after about 1 s
 
 enum VinState : uint8_t { V_IDLE, V_SEND, V_WAIT_SESS, V_WAIT_FF, V_WAIT_CF };
 static volatile bool g_vin_req = false;
@@ -176,7 +177,25 @@ static void vin_set_mode(twai_mode_t m) {
   beginBusB(m);
 }
 
+// Frames we transmit are queued here so main can put them in the log.
+static LogRecord g_txlog[16];
+static volatile uint8_t g_txlog_w = 0, g_txlog_r = 0;
+
+bool canbus_tx_pop(LogRecord &r) {
+  if (g_txlog_r == g_txlog_w) return false;
+  r = g_txlog[g_txlog_r & 15];
+  g_txlog_r++;
+  return true;
+}
+
 static bool vin_tx(uint32_t id, const uint8_t *d) {
+  if ((uint8_t)(g_txlog_w - g_txlog_r) < 16) {
+    LogRecord &l = g_txlog[g_txlog_w & 15];
+    l = {};
+    l.id = id; l.ch = CH_B; l.flags = FLAG_TX; l.dlc = 8;
+    memcpy(l.data, d, 8);
+    g_txlog_w++;
+  }
   twai_message_t m = {};
   m.identifier = id;
   m.ss = 1;                 // single shot: never retransmit
@@ -249,7 +268,7 @@ void canbus_vin_tick() {
   if (g_vin_state == V_SEND) {
     if (!vin_tx(VIN_REQ_ID, SESS_OPEN)) { vin_next("txfail"); return; }
     g_sess_open = true;               // closed again on every exit path
-    g_vin_deadline = now + VIN_TRY_MS;
+    g_vin_deadline = now + VIN_SESS_MS;
     g_vin_state = V_WAIT_SESS;
     return;
   }
