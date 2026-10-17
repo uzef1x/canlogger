@@ -16,8 +16,8 @@ static uint8_t *g_body = nullptr;
 bool uplink_connected() { return WiFi.status() == WL_CONNECTED; }
 uint32_t uplink_sent() { return g_sent; }
 
-// Server tells us what to do in the body of its /ingest reply ("ok" or "ok vin").
-// The VIN result goes to <server>/vin as plain text.
+// The VIN result goes to <server>/vin as plain text. Nothing the server sends can make
+// the board transmit: the VIN read is started by the board itself, after power-on.
 static void send_vin_result() {
   char vin[18], note[48];
   bool ok;
@@ -45,6 +45,8 @@ static void send_hello() {
   url.replace("/ingest", "/hello");
   String body = "board=" + String(LOGGER_BOARD_ID) + "&ssid=" + WiFi.SSID() +
                 "&ip=" + WiFi.localIP().toString() + "&bssid=" + WiFi.BSSIDstr();
+  char vin[18];
+  if (canbus_vin_known(vin)) body += String("&vin=") + vin;   // lets a restarted server relabel the car
   HTTPClient http;
   http.setTimeout(3000);
   if (http.begin(url)) {
@@ -89,7 +91,6 @@ static void uplink_task(void *) {
     if (http.begin(SERVER_URL)) {
       http.addHeader("Content-Type", "application/octet-stream");
       code = http.POST(g_body, sizeof(LogHeader) + n * sizeof(LogRecord));
-      if (code == 200 && http.getString().indexOf("vin") >= 0) canbus_vin_request();
       http.end();
     }
     if (code == 200) {

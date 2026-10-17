@@ -16,7 +16,14 @@ static uint32_t g_count[2] = {0, 0};
 
 static void capture_task(void *) {
   LogRecord r;
+  uint32_t rate_ms = 0, rate_last = 0;
   for (;;) {
+    // CAR-CAN counts as alive at >= 20 frames/s; the VIN read waits for that.
+    if (millis() - rate_ms >= 1000) {
+      rate_ms = millis();
+      canbus_vin_auto(g_count[CH_B] - rate_last >= 20);
+      rate_last = g_count[CH_B];
+    }
     canbus_poll();
     canbus_vin_tick();
     bool any = false;
@@ -42,6 +49,9 @@ void setup() {
   Serial.printf("[boot] CAN logger board %d\n", LOGGER_BOARD_ID);
   if (!ring_begin()) { Serial.println("[boot] PSRAM ring alloc FAILED"); }
   if (!canbus_begin()) Serial.println("[boot] CAN init failed");
+#if LOGGER_BOARD_ID == 1
+  canbus_vin_auto_enable();   // board 1's port B is the one wired to CAR-CAN (OBD 6/14)
+#endif
   xTaskCreatePinnedToCore(capture_task, "capture", 6144, nullptr, 5, nullptr, 1);
   uplink_start();
 }

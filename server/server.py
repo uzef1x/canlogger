@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """CAN logger ingest server (stdlib only).
 
-POST /ingest   binary batch from a logger board (see src/log_format.h)
-GET  /stats    per board/channel frame counts + last seen
-GET  /frames   ?board=1&ch=0&limit=100  newest frames as JSON
-GET  /         live dashboard (server/dashboard.html, polls /api/status)
-GET  /api/status  boards, channels, live IDs and recent frames as JSON
+Every time the boards are powered up in a car, the server starts a *connection*. The
+board that can read the VIN does so by itself at power-on and reports it; the server
+attaches the VIN to the connection, so every connection belongs to a specific car and
+a car's connections accumulate over time. The live dashboard shows only the car that is
+connected right now, and nothing when no board is uploading.
+
+POST /ingest      binary batch from a logger board (see src/log_format.h)
+POST /hello       board announces its WiFi network (and the VIN, once it knows it)
+POST /vin         board reports the result of its automatic VIN read
+GET  /            live dashboard (server/dashboard.html, polls /api/status)
+GET  /api/status  the connected car: boards, channels, live IDs, recent frames
+GET  /api/cars    every car seen (by VIN) with its connections
+GET  /stats, /frames   raw access
 Run:  python3 server.py [--port 8000] [--db canlog.db]
 """
-import argparse, json, os, sqlite3, struct, threading, time
+import argparse, json, os, re, sqlite3, struct, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -18,10 +26,15 @@ REC = struct.Struct("<QIBBBB8s")      # ts_us, id, ch, flags, dlc, reserved, dat
 MAGIC = 0x31474C43
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHANNELS = json.load(open(os.path.join(HERE, "channels.json")))
+VIN_RE = re.compile(r"^[0-9A-Z]{17}$")
+
+WINDOW = 10.0      # seconds used for rates and the live-ID table
+ACTIVE_S = 15.0    # no upload for this long = the car is disconnected (dashboard empties)
+CONN_GAP_S = 60.0  # silence longer than this ends a connection (see touch_conn)
 
 db = None
-pending_cmd = set()   # boards that should read the VIN on their next upload reply
 db_lock = threading.Lock()   # one shared sqlite connection: serialise every use
+conn = {"id": None, "last": 0.0, "boots": set()}   # the current/most recent connection
 
 
 def init_db(path):
@@ -31,30 +44,54 @@ def init_db(path):
         t REAL NOT NULL,          -- wall-clock seconds (server-estimated)
         board INTEGER NOT NULL, boot_id INTEGER NOT NULL, ch INTEGER NOT NULL,
         id INTEGER NOT NULL, flags INTEGER NOT NULL, dlc INTEGER NOT NULL, data BLOB NOT NULL)""")
+    if "conn" not in [r[1] for r in c.execute("PRAGMA table_info(frames)")]:
+        c.execute("ALTER TABLE frames ADD COLUMN conn INTEGER")   # NULL = logged before cars existed
     c.execute("CREATE INDEX IF NOT EXISTS ix_t ON frames(t)")
     c.execute("CREATE INDEX IF NOT EXISTS ix_bc ON frames(board, ch, t)")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_conn ON frames(conn, board, ch)")
     c.execute("""CREATE TABLE IF NOT EXISTS batches(
         rx REAL, board INTEGER, boot_id INTEGER, count INTEGER, dropped INTEGER)""")
     if "rssi" not in [r[1] for r in c.execute("PRAGMA table_info(batches)")]:
         c.execute("ALTER TABLE batches ADD COLUMN rssi INTEGER")
-    # Car identity: kind = 'vin' | 'vin_fail' | 'label'. Frames belong to the latest
-    # vin/label event at or before their time (one car per logger setup).
+    # One row per power-up session in a car. vin stays NULL if it could not be read.
+    c.execute("""CREATE TABLE IF NOT EXISTS connections(
+        id INTEGER PRIMARY KEY, start_t REAL NOT NULL, end_t REAL NOT NULL, vin TEXT)""")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_conn_vin ON connections(vin)")
     c.execute("""CREATE TABLE IF NOT EXISTS events(
-        t REAL NOT NULL, board INTEGER, kind TEXT NOT NULL, value TEXT)""")
+        t REAL NOT NULL, board INTEGER, kind TEXT NOT NULL, value TEXT, note TEXT, conn INTEGER)""")
+    if "conn" not in [r[1] for r in c.execute("PRAGMA table_info(events)")]:
+        c.execute("ALTER TABLE events ADD COLUMN conn INTEGER")
     c.execute("""CREATE TABLE IF NOT EXISTS devices(
         board INTEGER PRIMARY KEY, ssid TEXT, ip TEXT, bssid TEXT, hello_t REAL, peer TEXT)""")
-    if "note" not in [r[1] for r in c.execute("PRAGMA table_info(events)")]:
-        c.execute("ALTER TABLE events ADD COLUMN note TEXT")
-    c.execute("""CREATE VIEW IF NOT EXISTS v_frames AS
-        SELECT f.*,
-          (SELECT value FROM events e WHERE e.kind='vin'   AND e.t<=f.t ORDER BY e.t DESC LIMIT 1) AS vin,
-          (SELECT value FROM events e WHERE e.kind='label' AND e.t<=f.t ORDER BY e.t DESC LIMIT 1) AS label
-        FROM frames f""")
+    c.execute("DROP VIEW IF EXISTS v_frames")
+    c.execute("""CREATE VIEW v_frames AS
+        SELECT f.*, c.vin, c.start_t AS conn_start
+        FROM frames f LEFT JOIN connections c ON c.id = f.conn""")
     c.commit()
     return c
 
 
-WINDOW = 10.0   # seconds used for rates and the live-ID table
+def touch_conn(now, boot_id=None):
+    """Return the id of the connection this activity belongs to (db_lock held).
+
+    A connection ends after CONN_GAP_S of silence from every board. Activity after that
+    starts a new one, unless it comes from a board session (boot_id) that was already part
+    of the last connection: that board was never power-cycled, so it is the same car and
+    the gap was just a WiFi outage.
+    """
+    if conn["id"] is None or now - conn["last"] > CONN_GAP_S:
+        if not (conn["id"] is not None and boot_id is not None and boot_id in conn["boots"]):
+            cur = db.execute("INSERT INTO connections(start_t, end_t) VALUES(?,?)", (now, now))
+            conn["id"], conn["boots"] = cur.lastrowid, set()
+    if boot_id is not None:
+        conn["boots"].add(boot_id)
+    conn["last"] = now
+    db.execute("UPDATE connections SET end_t=? WHERE id=?", (now, conn["id"]))
+    return conn["id"]
+
+
+def set_vin(cid, vin):
+    db.execute("UPDATE connections SET vin=? WHERE id=? AND (vin IS NULL OR vin<>?)", (vin, cid, vin))
 
 
 def status():
@@ -64,49 +101,68 @@ def status():
 
 def _status():
     now = time.time()
+    cid = conn["id"]
+    if cid is None or now - conn["last"] > ACTIVE_S:
+        return {"active": False, "now": now}
     since = now - WINDOW
+    start_t, vin = db.execute("SELECT start_t, vin FROM connections WHERE id=?", (cid,)).fetchone()
+    fail = db.execute("SELECT note FROM events WHERE conn=? AND kind='vin_fail' ORDER BY t DESC LIMIT 1",
+                      (cid,)).fetchone()
+    car = {"vin": vin, "connected_age": now - start_t,
+           "state": "identified" if vin else ("failed" if fail and now - start_t > 30 else "identifying"),
+           "note": fail[0] if fail else None}
     boards = {}
-    for b, rx, boot, dropped, nb, rssi in db.execute(
-            """SELECT board, MAX(rx), boot_id, dropped, COUNT(*), rssi FROM batches
-               GROUP BY board"""):
-        boards[b] = {"board": b, "last_rx_age": now - rx, "boot_id": boot,
-                     "dropped": dropped, "batches": nb, "rssi": rssi,
-                     "vin_pending": b in pending_cmd, "ssid": None, "ip": None}
-    for b, ssid, ip, peer in db.execute("SELECT board, ssid, ip, peer FROM devices"):
+    for b, rx, boot, dropped, rssi in db.execute(
+            """SELECT board, MAX(rx), boot_id, dropped, rssi FROM batches WHERE rx>=? GROUP BY board""",
+            (start_t - 1,)):
+        boards[b] = {"board": b, "last_rx_age": now - rx, "boot_id": boot, "dropped": dropped,
+                     "rssi": rssi, "ssid": None}
+    for b, ssid in db.execute("SELECT board, ssid FROM devices"):
         if b in boards:
-            boards[b]["ssid"], boards[b]["ip"] = ssid or None, ip or peer
+            boards[b]["ssid"] = ssid or None
     chans = {}
     for b, brd in CHANNELS.items():
+        if int(b) not in boards:
+            continue
         for ci, letter in enumerate("AB"):
             info = brd.get(letter, {})
             chans[(int(b), ci)] = {"board": int(b), "ch": letter, "name": info.get("name"),
                                    "fd": info.get("fd"), "total": 0, "rate": 0.0, "last_age": None}
     for b, c, n, last in db.execute(
-            "SELECT board, ch, COUNT(*), MAX(t) FROM frames GROUP BY board, ch"):
+            "SELECT board, ch, COUNT(*), MAX(t) FROM frames WHERE conn=? GROUP BY board, ch", (cid,)):
         d = chans.setdefault((b, c), {"board": b, "ch": "AB"[c], "name": None, "fd": None})
         d.update(total=n, last_age=now - last)
     for b, c, n in db.execute(
-            "SELECT board, ch, COUNT(*) FROM frames WHERE t>? GROUP BY board, ch", (since,)):
+            "SELECT board, ch, COUNT(*) FROM frames WHERE conn=? AND t>? GROUP BY board, ch", (cid, since)):
         if (b, c) in chans:
             chans[(b, c)]["rate"] = n / WINDOW
     ids = [{"board": b, "ch": "AB"[c], "id": f"0x{i:03X}", "rate": n / WINDOW,
             "dlc": d, "data": bytes(x).hex(" ")}
            for b, c, i, n, d, x in db.execute(
-               """SELECT board, ch, id, COUNT(*), dlc, data FROM frames WHERE t>?
-                  GROUP BY board, ch, id ORDER BY board, ch, id LIMIT 300""", (since,))]
+               """SELECT board, ch, id, COUNT(*), dlc, data FROM frames WHERE conn=? AND t>?
+                  GROUP BY board, ch, id ORDER BY board, ch, id LIMIT 300""", (cid, since))]
     recent = [{"age": now - t, "board": b, "ch": "AB"[c], "id": f"0x{i:03X}",
                "dlc": d, "data": bytes(x).hex(" ")}
               for t, b, c, i, d, x in db.execute(
-                  "SELECT t, board, ch, id, dlc, data FROM frames ORDER BY t DESC LIMIT 40")]
-    car = {"vin": None, "vin_age": None, "label": None, "last_fail_age": None, "last_note": None}
-    for kind, t, v, note in db.execute(
-            """SELECT kind, MAX(t), value, note FROM events GROUP BY kind"""):
-        if kind == "vin": car["vin"], car["vin_age"], car["vin_note"] = v, now - t, note
-        elif kind == "label": car["label"] = v
-        elif kind == "vin_fail": car["last_fail_age"], car["last_note"] = now - t, note
-    car["vin_board"] = next((int(b) for b, i in CHANNELS.items() if i.get("vin_channel")), None)
-    return {"car": car, "now": now, "window": WINDOW, "boards": sorted(boards.values(), key=lambda x: x["board"]),
+                  "SELECT t, board, ch, id, dlc, data FROM frames WHERE conn=? ORDER BY t DESC LIMIT 40",
+                  (cid,))]
+    return {"active": True, "car": car, "now": now, "window": WINDOW,
+            "boards": sorted(boards.values(), key=lambda x: x["board"]),
             "channels": [chans[k] for k in sorted(chans)], "ids": ids, "recent": recent}
+
+
+def cars():
+    """Every car (by VIN) with its connections; unidentified connections grouped last."""
+    with db_lock:
+        rows = db.execute(
+            """SELECT c.id, c.start_t, c.end_t, c.vin,
+                      (SELECT COUNT(*) FROM frames f WHERE f.conn=c.id) FROM connections c
+               ORDER BY c.start_t""").fetchall()
+    out = {}
+    for cid, s, e, vin, n in rows:
+        car = out.setdefault(vin, {"vin": vin, "connections": []})
+        car["connections"].append({"id": cid, "start": s, "end": e, "frames": n})
+    return sorted(out.values(), key=lambda c: (c["vin"] is None, c["vin"] or ""))
 
 
 class H(BaseHTTPRequestHandler):
@@ -117,40 +173,41 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _form(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        return parse_qs(raw.decode("utf-8", "replace"))
+
     def do_POST(self):
         u = urlparse(self.path)
-        if u.path == "/hello":                     # board says which WiFi network it is on
-            q = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8", "replace"))
+        if u.path == "/hello":                     # board says which WiFi network it is on (+ VIN)
+            q = self._form()
             g = lambda k: q.get(k, [""])[0][:64]
+            now = time.time()
             with db_lock:
                 db.execute("""INSERT INTO devices(board,ssid,ip,bssid,hello_t,peer) VALUES(?,?,?,?,?,?)
                               ON CONFLICT(board) DO UPDATE SET ssid=excluded.ssid, ip=excluded.ip,
                               bssid=excluded.bssid, hello_t=excluded.hello_t, peer=excluded.peer""",
-                           (int(g("board") or 0), g("ssid"), g("ip"), g("bssid"), time.time(), self.client_address[0]))
+                           (int(g("board") or 0), g("ssid"), g("ip"), g("bssid"), now, self.client_address[0]))
+                # Once a board knows the VIN it repeats it here, so a server restart mid-drive
+                # still labels the new connection.
+                if VIN_RE.match(g("vin")) and conn["id"] is not None and now - conn["last"] <= CONN_GAP_S:
+                    set_vin(conn["id"], g("vin"))
                 db.commit()
             return self._send(200, b"ok", "text/plain")
-        if u.path == "/vin":                       # board reports the result of a VIN read
-            q = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("ascii", "replace"))
+        if u.path == "/vin":                       # board reports the result of its automatic VIN read
+            q = self._form()
             board, ok, vin = int(q.get("board", ["0"])[0]), q.get("ok", ["0"])[0] == "1", q.get("vin", [""])[0]
             note = q.get("note", [""])[0][:60]
+            ok = ok and bool(VIN_RE.match(vin))
+            now = time.time()
             with db_lock:
-                db.execute("INSERT INTO events(t,board,kind,value,note) VALUES(?,?,?,?,?)",
-                           (time.time(), board, "vin" if ok else "vin_fail", vin if ok else None, note))
+                cid = touch_conn(now)
+                if ok:
+                    set_vin(cid, vin)
+                db.execute("INSERT INTO events(t,board,kind,value,note,conn) VALUES(?,?,?,?,?,?)",
+                           (now, board, "vin" if ok else "vin_fail", vin if ok else None, note, cid))
                 db.commit()
             return self._send(200, b"ok", "text/plain")
-        if u.path == "/api/read_vin":              # dashboard button: ask a board to read the VIN once
-            board = int(parse_qs(u.query).get("board", ["0"])[0])
-            if not any(info.get("vin_channel") for b, info in CHANNELS.items() if int(b) == board):
-                return self._send(400, b'{"error":"board has no VIN channel"}')
-            with db_lock:
-                pending_cmd.add(board)
-            return self._send(200, b'{"queued":true}')
-        if u.path == "/api/label":                 # free-text car label
-            label = parse_qs(u.query).get("text", [""])[0][:60]
-            with db_lock:
-                db.execute("INSERT INTO events(t,board,kind,value) VALUES(?,?,?,?)", (time.time(), None, "label", label))
-                db.commit()
-            return self._send(200, b'{"ok":true}')
         if u.path != "/ingest":
             return self._send(404)
         rx = time.time()
@@ -168,26 +225,26 @@ class H(BaseHTTPRequestHandler):
             return self._send(400)
         # Device clock -> wall clock: the batch was sent at device time t_send and
         # received at `rx`, so wall = rx - (t_send - ts)/1e6 (error ~ one-way latency).
-        rows = []
+        recs = []
         for i in range(count):
             ts, fid, ch, flags, dlc, _, data = REC.unpack_from(body, hdr.size + i * REC.size)
-            rows.append((rx - (t_send - ts) / 1e6, board, boot_id, ch, fid, flags, dlc, data[:dlc]))
+            recs.append((rx - (t_send - ts) / 1e6, board, boot_id, ch, fid, flags, dlc, data[:dlc]))
         with db_lock:
-            db.executemany("INSERT INTO frames VALUES(?,?,?,?,?,?,?,?)", rows)
+            cid = touch_conn(rx, boot_id)
+            db.executemany("""INSERT INTO frames(t,board,boot_id,ch,id,flags,dlc,data,conn)
+                              VALUES(?,?,?,?,?,?,?,?,?)""", [r + (cid,) for r in recs])
             db.execute("INSERT INTO batches VALUES(?,?,?,?,?,?)", (rx, board, boot_id, count, dropped, rssi))
             db.commit()
-            cmd = board in pending_cmd
-            pending_cmd.discard(board)
-        self._send(200, b"ok vin" if cmd else b"ok", "text/plain")
+        self._send(200, b"ok", "text/plain")
 
     def do_GET(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if u.path == "/stats":
-            out = []
             with db_lock:
                 stat_rows = db.execute(
                     "SELECT board, ch, COUNT(*), MAX(t) FROM frames GROUP BY board, ch").fetchall()
+            out = []
             for board, ch, n, last in stat_rows:
                 info = CHANNELS.get(str(board), {}).get("AB"[ch], {})
                 out.append({"board": board, "ch": "AB"[ch], "name": info.get("name"),
@@ -196,7 +253,7 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/frames":
             sql, args = "SELECT t,board,ch,id,flags,dlc,data FROM frames", []
             conds = []
-            for k, col in (("board", "board"), ("ch", "ch")):
+            for k, col in (("board", "board"), ("ch", "ch"), ("conn", "conn")):
                 if k in q:
                     conds.append(f"{col}=?"); args.append(int(q[k][0]))
             if conds: sql += " WHERE " + " AND ".join(conds)
@@ -208,6 +265,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(rows).encode())
         if u.path == "/api/status":
             return self._send(200, json.dumps(status()).encode())
+        if u.path == "/api/cars":
+            return self._send(200, json.dumps(cars(), indent=1).encode())
         if u.path in ("/", "/index.html"):
             return self._send(200, open(os.path.join(HERE, "dashboard.html"), "rb").read(),
                               "text/html; charset=utf-8")

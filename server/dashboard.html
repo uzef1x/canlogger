@@ -44,6 +44,11 @@
 <main>
   <header><h1>CAN Logger</h1><span class="conn" id="conn">connecting…</span></header>
 
+  <div id="none" class="card" style="display:none;text-align:center;padding:40px 12px">
+    <div class="big" style="font-weight:500">No car connected</div>
+  </div>
+
+  <div id="live" style="display:none">
   <h2>Car</h2>
   <div class="grid" id="car"></div>
 
@@ -65,6 +70,7 @@
     <div class="scroll"><table><thead><tr><th>Age</th><th>Board</th><th>Ch</th><th>ID</th><th>DLC</th><th>Data</th></tr></thead>
     <tbody id="recent"></tbody></table></div>
   </section>
+  </div>
 </main>
 <script>
 const $ = id => document.getElementById(id);
@@ -85,39 +91,18 @@ function rssiBars(r) {
 const rssiText = r => r == null ? "n/a" : r === 0 ? "offline" :
   `${r} dBm (${r >= -60 ? "excellent" : r >= -70 ? "good" : r >= -80 ? "fair" : "weak"})`;
 
-async function readVin(board) {
-  if (!confirm("Read the VIN? This makes the logger TRANSMIT one request on the car's CAN bus. Only do it with the car parked.")) return;
-  await fetch("/api/read_vin?board=" + board, {method: "POST"});
-}
-async function saveLabel() {
-  await fetch("/api/label?text=" + encodeURIComponent($("lbl").value), {method: "POST"});
-}
-
-function renderCar(c, boards) {
-  const pending = boards.some(b => b.vin_pending);
-  const el = $("car");
-  if (el.dataset.ready !== "1") {
-    el.dataset.ready = "1";
-    el.innerHTML = `<div class="card"><div class="t"><span>VIN</span><span class="badge" id="vinAge"></span></div>
-      <div class="vin" id="vin">not read yet</div>
-      <div class="sub" id="vinNote"></div><div style="margin-top:8px"><button id="vinBtn">Read VIN</button></div></div>
-      <div class="card"><div class="t"><span>Car label</span></div>
-      <div style="margin:6px 0"><input type="text" id="lbl" placeholder="e.g. Dave's 2015 LEAF"></div>
-      <button onclick="saveLabel()">Save label</button></div>`;
-    $("vinBtn").onclick = () => readVin(c.vin_board);
-  }
-  $("vin").textContent = c.vin || "not read yet";
-  $("vinAge").textContent = c.vin_age == null ? "" : fmtAge(c.vin_age);
-  $("vinNote").textContent = pending ? "waiting for the board to read it…" :
-    (c.last_fail_age != null && (c.vin_age == null || c.last_fail_age < c.vin_age)) ?
-    "last read failed: " + (c.last_note || "no detail") : "";
-  $("vinBtn").disabled = pending || c.vin_board == null;
-  if (document.activeElement !== $("lbl") && c.label != null && $("lbl").value !== c.label) $("lbl").value = c.label;
+function renderCar(c) {
+  const vin = c.state === "identified" ? esc(c.vin) :
+    c.state === "identifying" ? "Reading VIN…" : "VIN unavailable";
+  $("car").innerHTML = `<div class="card"><div class="t"><span>Vehicle</span>
+    <span class="badge">connected ${fmtAge(c.connected_age).replace(" ago", "")}</span></div>
+    <div class="vin" style="${c.state === "identified" ? "" : "color:var(--mute)"}">${vin}</div>
+    ${c.state === "failed" ? `<div class="sub">${esc(c.note || "no reply from the car")}</div>` : ""}</div>`;
 }
 
 function render(d) {
   $("win").textContent = d.window;
-  renderCar(d.car, d.boards);
+  renderCar(d.car);
   $("boards").innerHTML = d.boards.length ? d.boards.map(b => {
     const cls = b.last_rx_age < 5 ? "ok" : b.last_rx_age < 30 ? "warn" : "bad";
     return `<div class="card ${cls}"><div class="t"><span><span class="dot"></span>Board ${b.board}</span>
@@ -154,8 +139,11 @@ function render(d) {
 async function tick() {
   try {
     const r = await fetch("/api/status", {cache: "no-store"});
-    render(await r.json());
-    $("conn").textContent = "live · " + new Date().toLocaleTimeString();
+    const d = await r.json();
+    $("live").style.display = d.active ? "" : "none";
+    $("none").style.display = d.active ? "none" : "";
+    if (d.active) render(d);
+    $("conn").textContent = d.active ? "live · " + new Date().toLocaleTimeString() : "";
   } catch (e) {
     $("conn").textContent = "server unreachable";
   }

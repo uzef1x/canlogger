@@ -163,6 +163,12 @@ static volatile bool g_vin_done = false;
 static bool     g_vin_ok = false;
 static char     g_vin_text[18];
 static char     g_vin_note[48];
+static bool     g_vin_known = false;
+static bool     g_auto = false;
+static uint8_t  g_auto_tries = 0;
+static uint32_t g_auto_next = 3000;      // not before 3 s after boot
+static constexpr uint8_t  AUTO_MAX_TRIES = 5;
+static constexpr uint32_t AUTO_RETRY_MS  = 10000;
 
 static void vin_set_mode(twai_mode_t m) {
   twai_stop();
@@ -187,6 +193,7 @@ static void vin_note(const char *what) {
 
 static void vin_finish(bool ok) {
   g_vin_ok = ok;
+  if (ok) g_vin_known = true;
   g_vin_done = true;
   g_vin_state = V_IDLE;
   vin_set_mode(TWAI_MODE_LISTEN_ONLY);
@@ -200,6 +207,24 @@ static void vin_next(const char *why) {
 }
 
 void canbus_vin_request() { g_vin_req = true; }
+
+void canbus_vin_auto_enable() { g_auto = true; }
+
+void canbus_vin_auto(bool bus_alive) {
+  if (!g_auto || g_vin_known || g_vin_state != V_IDLE || g_vin_req) return;
+  if (g_auto_tries >= AUTO_MAX_TRIES || !bus_alive) return;
+  const uint32_t now = millis();
+  if ((int32_t)(now - g_auto_next) < 0) return;
+  g_auto_tries++;
+  g_auto_next = now + AUTO_RETRY_MS;
+  g_vin_req = true;
+}
+
+bool canbus_vin_known(char out[18]) {
+  if (!g_vin_known) return false;
+  memcpy(out, g_vin_text, 18);
+  return true;
+}
 
 void canbus_vin_tick() {
   const uint32_t now = millis();
