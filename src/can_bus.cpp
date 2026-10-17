@@ -201,7 +201,10 @@ static bool vin_tx(uint32_t id, const uint8_t *d) {
   }
   twai_message_t m = {};
   m.identifier = id;
-  m.ss = 1;                 // single shot: never retransmit
+  // Not single shot: on this busy bus our low-priority ID loses arbitration to other
+  // nodes' frames, and a single-shot frame is then dropped instead of retried. Every
+  // attempt is bounded by the state machine timeouts and the driver is uninstalled at the end.
+  m.ss = 0;
   m.data_length_code = 8;
   memcpy(m.data, d, 8);
   return twai_transmit(&m, pdMS_TO_TICKS(20)) == ESP_OK;
