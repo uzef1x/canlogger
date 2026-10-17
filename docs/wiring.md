@@ -1,55 +1,56 @@
-# Wiring: T-2CANFD boards to the LEAF OBD-II connector
+# Wiring: T-2CANFD boards to the LEAF / e-NV200 OBD-II connector
 
-Every fact below is tagged with where it came from. Nothing is from the CANBRIDGE project.
+Every claim has a source and a confidence level. Nothing here comes from the CANBRIDGE project.
+**No Nissan document was obtained.** The Nissan service manual (LAN section) is the primary
+source and is paywalled; verify against it or by meter before connecting.
 
-## OBD-II connector (LEAF, Type A 16-pin)
+## OBD-II connector pinout
 
-Source: [Nissan Leaf OBD-II manual, "Diagnostic connector"](https://leaf-obd.readthedocs.io/en/latest/diagnostic-connector.html)
-(rst source: [sethfischer/nissan-leaf-obd-manual](https://github.com/sethfischer/nissan-leaf-obd-manual/blob/main/source/diagnostic-connector.rst)).
-Pins 4, 5, 6, 14, 16 are ISO 15031-3 mandated. Pins 3, 8, 11, 12, 13 are Nissan-specific
-and the manual cites a community thread (mynissanleaf.com CAN decoding), **not** a Nissan
-document. It does not say which model years it covers. Confirm by meter or the Nissan
-service manual (LAN section) before relying on it.
+| Pin | Signal | Sources agreeing | Confidence |
+|-----|--------|------------------|------------|
+| 6 / 14 | CAR-CAN high / low ("alternate CAN") | [leaf-obd manual](https://leaf-obd.readthedocs.io/en/latest/diagnostic-connector.html), [OpenEnergyMonitor ZE0/e-NV200 cable](https://shop.openenergymonitor.com/nissan-ze0-e-nv200-obd2-ovms-cable/) (6 = H, 14 = L), ISO 15031-3 | high |
+| 13 / 12 | EV-CAN high / low ("primary CAN") | leaf-obd manual (13 = H, 12 = L), OpenEnergyMonitor cable (13 = H, 12 = L) | medium-high (two independent sources, both community) |
+| 11 / 3 | AV-CAN high / low | leaf-obd manual only (it cites a mynissanleaf.com forum thread) | **low** (single source, not independently confirmed) |
+| 16 | permanent +12 V | ISO 15031-3, both sources | high |
+| 8 | +12 V only when vehicle powered on | leaf-obd manual only (forum-derived) | low-medium |
+| 4 / 5 | chassis / signal ground | ISO 15031-3, OpenEnergyMonitor cable (pin 4) | high |
 
-| Pin | Signal |
-|-----|--------|
-| 3 / 11 | AV-CAN low / high |
-| 4 | chassis ground |
-| 5 | signal ground |
-| 6 / 14 | CAR-CAN high / low |
-| 8 | +12 V only when the vehicle is powered on |
-| 12 / 13 | EV-CAN low / high |
-| 16 | permanent +12 V |
-
-All three buses are ISO 15765-4 CAN, 11-bit IDs, 500 kbit/s.
-OVMS documents the ZE1 differently: its OBD port is isolated by a gateway that powers
-down with ignition off ([OVMS docs](https://docs.openvehicles.com/en/latest/components/vehicle_nissanleaf/docs/index.html)).
-ZE0 is what the pinout above is for.
+- Protocol: ISO 15765-4 CAN, 11-bit IDs, 500 kbit/s (leaf-obd manual). One search result
+  claimed 29-bit extended frames; it came from a dongle-vendor blog and contradicts the others.
+- **ZE0 only.** [OVMS docs](https://docs.openvehicles.com/en/latest/components/vehicle_nissanleaf/docs/index.html):
+  on ZE1 (2018+) the OBD-II port is isolated by a gateway that powers down with ignition off,
+  so the buses must be tapped behind the cluster. The OBD-II cable works for ZE0.
+- **e-NV200:** the OpenEnergyMonitor cable is sold for "all models of e-NV200" with the same
+  EV-CAN/CAR-CAN pins. No source gives e-NV200 AV-CAN pins. OVMS calls its third bus "IT-CAN"
+  and does not use it.
+- The leaf-obd manual does not state model years; forum material is mostly 2011-2013 hardware.
 
 ## Board (T-2CANFD V1.0)
 
-Source: LilyGo schematic `T-2Can-Fd_V1.0.pdf`, [Xinyuan-LilyGO/T-2Can](https://github.com/Xinyuan-LilyGO/T-2Can),
-read directly.
+- Channel A = MCP2518FD (CAN FD), channel B = ESP32-S3 TWAI (classic). Confirmed by the
+  [LilyGo wiki](https://wiki.lilygo.cc/products/industrial-series/t-2can-fd/).
+- LilyGo schematic ([T-2Can-Fd_V1.0.pdf](https://github.com/Xinyuan-LilyGO/T-2Can/blob/main/project/T-2Can-Fd_V1.0.pdf)),
+  read directly: isolated transceiver per port; **fixed 120 ohm across CANH-CANL on both ports
+  (RZ2 port A, RZ1 port B), no jumper/switch**; transceiver ground pin (CANG) goes to the SGND net;
+  DGND is the TVS return, tied to SGND only via 1 Mohm || 1 nF.
+- **DIP switch:** the [Battery Emulator hardware page](https://dalathegreat.github.io/Battery-Emulator-Wiki/hardware/lilygo_t_2can/)
+  says "The CAN-FD needs the DIP switches setting correctly. You need to enable DIP switch 2."
+  Third-party, picture not readable here, and LilyGo's own wiki does not mention it. **Check
+  this on the physical boards: if channel A hears nothing, this is the first suspect.**
+- Power input range: not stated by LilyGo's wiki. The same page recommends 12 V instead of 5 V
+  if CAN errors appear.
 
-- Each port: isolated transceiver (TD501MCAN), common-mode choke, TVS clamps.
-- **A fixed 120 ohm resistor sits across CANH-CANL on both ports** (RZ2 on port A, RZ1 on port B).
-  There is no jumper or switch in the schematic.
-- The transceiver's isolated ground pin (CANG) is wired to the SGND net. DGND is the
-  TVS/ESD return and is tied to SGND only through 1 Mohm in parallel with 1 nF.
+## Consequences (my reasoning, untested)
 
-## Consequences (my reasoning from the above, not from a source)
+- A tap should not add a third 120 ohm. Remove RZ1/RZ2 on any port used as a tap.
+- Wire SGND (not DGND) to OBD pin 5.
+- Prefer powering from pin 8 (switched) if confirmed, otherwise add a switched supply.
 
-- A passive tap on a live bus should not add a third 120 ohm termination. Remove RZ1 and RZ2
-  on any port used as a tap, or accept a degraded bus. Not yet tested on the car.
-- Wire SGND (not DGND) to OBD pin 5. DGND can stay unconnected.
-- Power the boards from OBD pin 8 (switched), not pin 16, so a parked car is not drained.
-
-## Proposed connections
+## Proposed connections (pending verification by meter)
 
 | Board port | OBD pins | Bus |
 |------------|----------|-----|
 | Board 1, A | 13 (H), 12 (L), SGND to 5 | EV-CAN |
 | Board 1, B | 6 (H), 14 (L), SGND to 5 | CAR-CAN |
-| Board 2, A | 11 (H), 3 (L), SGND to 5 | AV-CAN |
+| Board 2, A | 11 (H), 3 (L), SGND to 5 | AV-CAN (unconfirmed pins) |
 | Board 2, B | unused | spare |
-| Both boards, VIN/GND | 8 and 4 | power |
