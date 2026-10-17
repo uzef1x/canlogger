@@ -61,6 +61,17 @@ void loop() {
   static uint32_t last = 0;
   if (millis() - last > 5000) {
     last = millis();
+    if (!uplink_connected()) {
+      // Say why: is our network even visible? (status codes: 1 no SSID, 4 connect failed,
+      // 6 wrong password / disconnected)
+      const int n = WiFi.scanComplete();
+      int rssi = 0;
+      for (int i = 0; i < n; i++) if (WiFi.SSID(i) == WIFI_SSID) rssi = WiFi.RSSI(i);
+      Serial.printf("[wifi] not connected: status=%d, '%s' %s\n", (int)WiFi.status(), WIFI_SSID,
+                    rssi ? "is visible" : "NOT seen in last scan");
+      WiFi.scanDelete();
+      WiFi.scanNetworks(true);   // async; read on the next pass
+    }
     Serial.printf("[stat] A=%lu B=%lu ring=%lu sent=%lu dropped=%lu wifi=%d rssi=%d dBm\n",
                   (unsigned long)g_count[0], (unsigned long)g_count[1],
                   (unsigned long)ring_used(), (unsigned long)uplink_sent(),

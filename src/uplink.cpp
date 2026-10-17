@@ -62,7 +62,17 @@ static void uplink_task(void *) {
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   uint32_t backoff = 500;
 
+  uint32_t down_since = millis();
   for (;;) {
+    // A failed first connection is not retried by auto-reconnect, so restart the attempt
+    // ourselves if we have been offline for 15 s.
+    if (uplink_connected()) down_since = millis();
+    else if (millis() - down_since > 15000) {
+      Serial.println("[wifi] retrying connection");
+      WiFi.disconnect();
+      WiFi.begin(WIFI_SSID, WIFI_PASS);
+      down_since = millis();
+    }
     if (uplink_connected()) { send_hello(); send_vin_result(); }
     if (!uplink_connected() || ring_used() == 0) {
       vTaskDelay(pdMS_TO_TICKS(200));
