@@ -62,11 +62,33 @@ source and is paywalled; verify against it or by meter before connecting.
 - Wire SGND (not DGND) to OBD pin 5.
 - Prefer powering from pin 8 (switched) if confirmed, otherwise add a switched supply.
 
-## Proposed connections (pending verification by meter)
+## Wiring table (verify with a meter first, see confidence levels above)
 
-| Board port | OBD pins | Bus |
-|------------|----------|-----|
-| Board 1, A | 13 (H), 12 (L), SGND to 5 | EV-CAN |
-| Board 1, B | 6 (H), 14 (L), SGND to 5 | CAR-CAN |
-| Board 2, A | 11 (H), 3 (L), SGND to 5 | AV-CAN (unconfirmed pins) |
-| Board 2, B | unused | spare |
+Screw order on each board, left to right, component side up, screw terminals at the top edge,
+USB-C bottom-left (deduced from photos, confirm on the underside):
+`DGNDB CANHB CANLB SGNDB | DGNDA CANHA CANLA SGNDA`. Leave both `DGND` screws unconnected.
+
+### Board 1 (`env:board1`)
+| Board screw | OBD-II pin | Signal | Bus |
+|-------------|-----------|--------|-----|
+| `CANHA` | 13 | EV-CAN high | EV-CAN (port A, CAN-FD capable) |
+| `CANLA` | 12 | EV-CAN low | EV-CAN |
+| `SGNDA` | 5 | signal ground | EV-CAN |
+| `CANHB` | 6 | CAR-CAN high | CAR-CAN (port B, classic) |
+| `CANLB` | 14 | CAR-CAN low | CAR-CAN |
+| `SGNDB` | 5 | signal ground | CAR-CAN |
+| `12-24V` terminal + | 8 (or 16 via a switch) | +12 V | power |
+| `GND` terminal | 4 | chassis ground | power |
+
+### Board 2 (`env:board2`)
+| Board screw | OBD-II pin | Signal | Bus |
+|-------------|-----------|--------|-----|
+| `CANHA` | 11 | AV-CAN high | AV-CAN (port A, CAN-FD capable) |
+| `CANLA` | 3 | AV-CAN low | AV-CAN (single-source pins) |
+| `SGNDA` | 5 | signal ground | AV-CAN |
+| `CANHB`, `CANLB`, `SGNDB` | none | | port B unused |
+| `12-24V` terminal + | 8 (or 16 via a switch) | +12 V | power |
+| `GND` terminal | 4 | chassis ground | power |
+
+Termination: remove the 120 ohm (`121`) resistor beside the filter choke on each port used as
+a tap. Untested on the car.
