@@ -1,0 +1,4 @@
+{
+  "1": {"A": {"name": "EV-CAN",  "fd": true},  "B": {"name": "CAR-CAN", "fd": false}},
+  "2": {"A": {"name": "AV-CAN",  "fd": true},  "B": {"name": "SPARE",   "fd": false}}
+}
