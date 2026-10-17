@@ -5,6 +5,7 @@
 //   loop                             : NVS housekeeping + serial stats
 // ─────────────────────────────────────────────────────────────────────────────
 #include <Arduino.h>
+#include <WiFi.h>
 #include "esp_timer.h"
 #include "config.h"
 #include "can_bus.h"
@@ -17,6 +18,7 @@ static void capture_task(void *) {
   LogRecord r;
   for (;;) {
     canbus_poll();
+    canbus_vin_tick();
     bool any = false;
     for (uint8_t ch = CH_A; ch <= CH_B; ch++) {
       while (canbus_receive(ch, r)) {
@@ -24,6 +26,7 @@ static void capture_task(void *) {
         // timestamping (MCP2518FD TBC) is the upgrade if ordering matters.
         r.ts_us = (uint64_t)esp_timer_get_time();
         ring_push(r);
+        if (ch == CH_B) canbus_vin_feed(r);
         g_count[ch]++;
         any = true;
       }
@@ -48,10 +51,10 @@ void loop() {
   static uint32_t last = 0;
   if (millis() - last > 5000) {
     last = millis();
-    Serial.printf("[stat] A=%lu B=%lu ring=%lu sent=%lu dropped=%lu wifi=%d\n",
+    Serial.printf("[stat] A=%lu B=%lu ring=%lu sent=%lu dropped=%lu wifi=%d rssi=%d dBm\n",
                   (unsigned long)g_count[0], (unsigned long)g_count[1],
                   (unsigned long)ring_used(), (unsigned long)uplink_sent(),
-                  (unsigned long)ring_dropped(), uplink_connected());
+                  (unsigned long)ring_dropped(), uplink_connected(), uplink_connected() ? WiFi.RSSI() : 0);
   }
   delay(20);
 }

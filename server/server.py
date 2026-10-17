@@ -12,13 +12,15 @@ import argparse, json, os, sqlite3, struct, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-HDR = struct.Struct("<IBBHIQI")       # magic, board, ver, count, boot_id, t_send_us, dropped
+HDR = struct.Struct("<IBBHIQI")       # v1: magic, board, ver, count, boot_id, t_send_us, dropped
+HDR2 = struct.Struct("<IBBHIQIb3x")   # v2: v1 + rssi (dBm) + 3 pad
 REC = struct.Struct("<QIBBBB8s")      # ts_us, id, ch, flags, dlc, reserved, data
 MAGIC = 0x31474C43
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHANNELS = json.load(open(os.path.join(HERE, "channels.json")))
 
 db = None
+pending_cmd = set()   # boards that should read the VIN on their next upload reply
 db_lock = threading.Lock()   # one shared sqlite connection: serialise every use
 
 
@@ -33,6 +35,17 @@ def init_db(path):
     c.execute("CREATE INDEX IF NOT EXISTS ix_bc ON frames(board, ch, t)")
     c.execute("""CREATE TABLE IF NOT EXISTS batches(
         rx REAL, board INTEGER, boot_id INTEGER, count INTEGER, dropped INTEGER)""")
+    if "rssi" not in [r[1] for r in c.execute("PRAGMA table_info(batches)")]:
+        c.execute("ALTER TABLE batches ADD COLUMN rssi INTEGER")
+    # Car identity: kind = 'vin' | 'vin_fail' | 'label'. Frames belong to the latest
+    # vin/label event at or before their time (one car per logger setup).
+    c.execute("""CREATE TABLE IF NOT EXISTS events(
+        t REAL NOT NULL, board INTEGER, kind TEXT NOT NULL, value TEXT)""")
+    c.execute("""CREATE VIEW IF NOT EXISTS v_frames AS
+        SELECT f.*,
+          (SELECT value FROM events e WHERE e.kind='vin'   AND e.t<=f.t ORDER BY e.t DESC LIMIT 1) AS vin,
+          (SELECT value FROM events e WHERE e.kind='label' AND e.t<=f.t ORDER BY e.t DESC LIMIT 1) AS label
+        FROM frames f""")
     c.commit()
     return c
 
@@ -49,11 +62,12 @@ def _status():
     now = time.time()
     since = now - WINDOW
     boards = {}
-    for b, rx, boot, dropped, nb in db.execute(
-            """SELECT board, MAX(rx), boot_id, dropped, COUNT(*) FROM batches
+    for b, rx, boot, dropped, nb, rssi in db.execute(
+            """SELECT board, MAX(rx), boot_id, dropped, COUNT(*), rssi FROM batches
                GROUP BY board"""):
         boards[b] = {"board": b, "last_rx_age": now - rx, "boot_id": boot,
-                     "dropped": dropped, "batches": nb}
+                     "dropped": dropped, "batches": nb, "rssi": rssi,
+                     "vin_pending": b in pending_cmd}
     chans = {}
     for b, brd in CHANNELS.items():
         for ci, letter in enumerate("AB"):
@@ -77,7 +91,14 @@ def _status():
                "dlc": d, "data": bytes(x).hex(" ")}
               for t, b, c, i, d, x in db.execute(
                   "SELECT t, board, ch, id, dlc, data FROM frames ORDER BY t DESC LIMIT 40")]
-    return {"now": now, "window": WINDOW, "boards": sorted(boards.values(), key=lambda x: x["board"]),
+    car = {"vin": None, "vin_age": None, "label": None, "last_fail_age": None}
+    for kind, t, v in db.execute(
+            """SELECT kind, MAX(t), value FROM events GROUP BY kind"""):
+        if kind == "vin": car["vin"], car["vin_age"] = v, now - t
+        elif kind == "label": car["label"] = v
+        elif kind == "vin_fail": car["last_fail_age"] = now - t
+    car["vin_board"] = next((int(b) for b, i in CHANNELS.items() if i.get("vin_channel")), None)
+    return {"car": car, "now": now, "window": WINDOW, "boards": sorted(boards.values(), key=lambda x: x["board"]),
             "channels": [chans[k] for k in sorted(chans)], "ids": ids, "recent": recent}
 
 
@@ -90,26 +111,56 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        if urlparse(self.path).path != "/ingest":
+        u = urlparse(self.path)
+        if u.path == "/vin":                       # board reports the result of a VIN read
+            q = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("ascii", "replace"))
+            board, ok, vin = int(q.get("board", ["0"])[0]), q.get("ok", ["0"])[0] == "1", q.get("vin", [""])[0]
+            with db_lock:
+                db.execute("INSERT INTO events VALUES(?,?,?,?)",
+                           (time.time(), board, "vin" if ok else "vin_fail", vin if ok else None))
+                db.commit()
+            return self._send(200, b"ok", "text/plain")
+        if u.path == "/api/read_vin":              # dashboard button: ask a board to read the VIN once
+            board = int(parse_qs(u.query).get("board", ["0"])[0])
+            if not any(info.get("vin_channel") for b, info in CHANNELS.items() if int(b) == board):
+                return self._send(400, b'{"error":"board has no VIN channel"}')
+            with db_lock:
+                pending_cmd.add(board)
+            return self._send(200, b'{"queued":true}')
+        if u.path == "/api/label":                 # free-text car label
+            label = parse_qs(u.query).get("text", [""])[0][:60]
+            with db_lock:
+                db.execute("INSERT INTO events VALUES(?,?,?,?)", (time.time(), None, "label", label))
+                db.commit()
+            return self._send(200, b'{"ok":true}')
+        if u.path != "/ingest":
             return self._send(404)
         rx = time.time()
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         if len(body) < HDR.size:
             return self._send(400)
-        magic, board, ver, count, boot_id, t_send, dropped = HDR.unpack_from(body)
-        if magic != MAGIC or ver != 1 or len(body) != HDR.size + count * REC.size:
+        ver = body[5]
+        hdr = HDR2 if ver == 2 else HDR
+        if ver not in (1, 2) or len(body) < hdr.size:
+            return self._send(400)
+        vals = hdr.unpack_from(body)
+        magic, board, _, count, boot_id, t_send, dropped = vals[:7]
+        rssi = vals[7] if ver == 2 else None
+        if magic != MAGIC or len(body) != hdr.size + count * REC.size:
             return self._send(400)
         # Device clock -> wall clock: the batch was sent at device time t_send and
         # received at `rx`, so wall = rx - (t_send - ts)/1e6 (error ~ one-way latency).
         rows = []
         for i in range(count):
-            ts, fid, ch, flags, dlc, _, data = REC.unpack_from(body, HDR.size + i * REC.size)
+            ts, fid, ch, flags, dlc, _, data = REC.unpack_from(body, hdr.size + i * REC.size)
             rows.append((rx - (t_send - ts) / 1e6, board, boot_id, ch, fid, flags, dlc, data[:dlc]))
         with db_lock:
             db.executemany("INSERT INTO frames VALUES(?,?,?,?,?,?,?,?)", rows)
-            db.execute("INSERT INTO batches VALUES(?,?,?,?,?)", (rx, board, boot_id, count, dropped))
+            db.execute("INSERT INTO batches VALUES(?,?,?,?,?,?)", (rx, board, boot_id, count, dropped, rssi))
             db.commit()
-        self._send(200, b"ok", "text/plain")
+            cmd = board in pending_cmd
+            pending_cmd.discard(board)
+        self._send(200, b"ok vin" if cmd else b"ok", "text/plain")
 
     def do_GET(self):
         u = urlparse(self.path)

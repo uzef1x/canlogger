@@ -1,6 +1,7 @@
 #include "uplink.h"
 #include "config.h"
 #include "ring.h"
+#include "can_bus.h"
 #include "log_format.h"
 #include <Arduino.h>
 #include <WiFi.h>
@@ -15,6 +16,26 @@ static uint8_t *g_body = nullptr;
 bool uplink_connected() { return WiFi.status() == WL_CONNECTED; }
 uint32_t uplink_sent() { return g_sent; }
 
+// Server tells us what to do in the body of its /ingest reply ("ok" or "ok vin").
+// The VIN result goes to <server>/vin as plain text.
+static void send_vin_result() {
+  char vin[18];
+  bool ok;
+  if (!canbus_vin_take(vin, ok)) return;
+  String url = SERVER_URL;
+  url.replace("/ingest", "/vin");
+  char body[64];
+  snprintf(body, sizeof(body), "board=%d&ok=%d&vin=%s", LOGGER_BOARD_ID, ok ? 1 : 0, vin);
+  HTTPClient http;
+  http.setTimeout(5000);
+  if (http.begin(url)) {
+    http.addHeader("Content-Type", "text/plain");
+    http.POST((uint8_t *)body, strlen(body));
+    http.end();
+  }
+  Serial.printf("[vin] %s %s\n", ok ? "read" : "FAILED", vin);
+}
+
 static void uplink_task(void *) {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
@@ -22,6 +43,7 @@ static void uplink_task(void *) {
   uint32_t backoff = 500;
 
   for (;;) {
+    if (uplink_connected()) send_vin_result();
     if (!uplink_connected() || ring_used() == 0) {
       vTaskDelay(pdMS_TO_TICKS(200));
       continue;
@@ -37,6 +59,8 @@ static void uplink_task(void *) {
     h.boot_id = g_boot_id;
     h.t_send_us = (uint64_t)esp_timer_get_time();   // stamped as late as possible
     h.dropped = ring_dropped();
+    h.rssi = (int8_t)WiFi.RSSI();
+    h.pad[0] = h.pad[1] = h.pad[2] = 0;
     memcpy(g_body, &h, sizeof(h));
 
     HTTPClient http;
@@ -47,6 +71,7 @@ static void uplink_task(void *) {
     if (http.begin(SERVER_URL)) {
       http.addHeader("Content-Type", "application/octet-stream");
       code = http.POST(g_body, sizeof(LogHeader) + n * sizeof(LogRecord));
+      if (code == 200 && http.getString().indexOf("vin") >= 0) canbus_vin_request();
       http.end();
     }
     if (code == 200) {

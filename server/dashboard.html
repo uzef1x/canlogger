@@ -25,6 +25,10 @@
   .sub { color:var(--mute); font-size:12px; }
   .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; background:var(--mute); }
   .ok .dot { background:var(--ok); } .warn .dot { background:var(--warn); } .bad .dot { background:var(--bad); }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:5px 12px; font:inherit; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  input[type=text] { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:4px 8px; font:inherit; width:100%; }
+  .vin { font-family:ui-monospace,Menlo,monospace; font-size:18px; font-weight:600; letter-spacing:.04em; }
   .badge { font-size:11px; border:1px solid var(--line); border-radius:99px; padding:0 7px; color:var(--mute); }
   section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:16px; }
   .scroll { overflow:auto; max-height:360px; }
@@ -39,6 +43,9 @@
 <body>
 <main>
   <header><h1>CAN Logger</h1><span class="conn" id="conn">connecting…</span></header>
+
+  <h2>Car</h2>
+  <div class="grid" id="car"></div>
 
   <h2>Boards</h2>
   <div class="grid" id="boards"></div>
@@ -66,13 +73,48 @@ const esc = s => String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;"
 let sel = "";
 $("flt").onchange = e => { sel = e.target.value; };
 
+const rssiText = r => r == null ? "n/a" : r === 0 ? "offline" :
+  `${r} dBm (${r >= -60 ? "excellent" : r >= -70 ? "good" : r >= -80 ? "fair" : "weak"})`;
+
+async function readVin(board) {
+  if (!confirm("Read the VIN? This makes the logger TRANSMIT one request on the car's CAN bus. Only do it with the car parked.")) return;
+  await fetch("/api/read_vin?board=" + board, {method: "POST"});
+}
+async function saveLabel() {
+  await fetch("/api/label?text=" + encodeURIComponent($("lbl").value), {method: "POST"});
+}
+
+function renderCar(c, boards) {
+  const pending = boards.some(b => b.vin_pending);
+  const el = $("car");
+  if (el.dataset.ready !== "1") {
+    el.dataset.ready = "1";
+    el.innerHTML = `<div class="card"><div class="t"><span>VIN</span><span class="badge" id="vinAge"></span></div>
+      <div class="vin" id="vin">not read yet</div>
+      <div class="sub" id="vinNote"></div><div style="margin-top:8px"><button id="vinBtn">Read VIN</button></div></div>
+      <div class="card"><div class="t"><span>Car label</span></div>
+      <div style="margin:6px 0"><input type="text" id="lbl" placeholder="e.g. Dave's 2015 LEAF"></div>
+      <button onclick="saveLabel()">Save label</button></div>`;
+    $("vinBtn").onclick = () => readVin(c.vin_board);
+  }
+  $("vin").textContent = c.vin || "not read yet";
+  $("vinAge").textContent = c.vin_age == null ? "" : fmtAge(c.vin_age);
+  $("vinNote").textContent = pending ? "waiting for the board to read it…" :
+    (c.last_fail_age != null && (c.vin_age == null || c.last_fail_age < c.vin_age)) ?
+    "last read failed (car must be on; no reply)" : "";
+  $("vinBtn").disabled = pending || c.vin_board == null;
+  if (document.activeElement !== $("lbl") && c.label != null && $("lbl").value !== c.label) $("lbl").value = c.label;
+}
+
 function render(d) {
   $("win").textContent = d.window;
+  renderCar(d.car, d.boards);
   $("boards").innerHTML = d.boards.length ? d.boards.map(b => {
     const cls = b.last_rx_age < 5 ? "ok" : b.last_rx_age < 30 ? "warn" : "bad";
     return `<div class="card ${cls}"><div class="t"><span><span class="dot"></span>Board ${b.board}</span>
       <span class="badge">boot ${b.boot_id.toString(16)}</span></div>
       <div class="sub">last upload ${fmtAge(b.last_rx_age)}</div>
+      <div class="sub">WiFi ${rssiText(b.rssi)}</div>
       <div class="sub">${b.batches} batches · dropped ${b.dropped}</div></div>`;
   }).join("") : `<div class="empty">No board has uploaded yet.</div>`;
 
