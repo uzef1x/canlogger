@@ -136,10 +136,13 @@ function render(d) {
     : `<tr><td colspan="6" class="empty">No frames yet.</td></tr>`;
 }
 
+let pageVersion = null;
 async function tick() {
   try {
     const r = await fetch("/api/status", {cache: "no-store"});
     const d = await r.json();
+    if (pageVersion === null) pageVersion = d.page;
+    else if (d.page !== pageVersion) { location.reload(); return; }   // dashboard was updated
     $("live").style.display = d.active ? "" : "none";
     $("none").style.display = d.active ? "none" : "";
     if (d.active) render(d);

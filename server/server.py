@@ -30,11 +30,10 @@ VIN_RE = re.compile(r"^[0-9A-Z]{17}$")
 
 WINDOW = 10.0      # seconds used for rates and the live-ID table
 ACTIVE_S = 15.0    # no upload for this long = the car is disconnected (dashboard empties)
-CONN_GAP_S = 60.0  # silence longer than this ends a connection (see touch_conn)
 
 db = None
 db_lock = threading.Lock()   # one shared sqlite connection: serialise every use
-conn = {"id": None, "last": 0.0, "boots": set()}   # the current/most recent connection
+conn = {"id": None, "last": 0.0, "boots": set(), "boards": {}}   # the current/most recent connection
 
 
 def init_db(path):
@@ -71,20 +70,33 @@ def init_db(path):
     return c
 
 
-def touch_conn(now, boot_id=None):
+def PAGE_VERSION():
+    """Changes whenever dashboard.html changes, so an open page can reload itself."""
+    return os.path.getmtime(os.path.join(HERE, "dashboard.html"))
+
+
+def touch_conn(now, board=None, boot_id=None):
     """Return the id of the connection this activity belongs to (db_lock held).
 
-    A connection ends after CONN_GAP_S of silence from every board. Activity after that
-    starts a new one, unless it comes from a board session (boot_id) that was already part
-    of the last connection: that board was never power-cycled, so it is the same car and
-    the gap was just a WiFi outage.
+    A connection is one power-up of the boards in a car. A new one starts when
+      * a board that is already part of the current connection comes back with a new boot id
+        (it was power-cycled: a new ignition cycle, however short), or
+      * the connection went quiet (ACTIVE_S, the dashboard has already emptied) and activity
+        resumes from a board session we have NOT seen in it.
+    Activity from a board session that was already in the last connection is the same car,
+    just a WiFi outage. Boards coming up a few seconds apart share one connection.
     """
-    if conn["id"] is None or now - conn["last"] > CONN_GAP_S:
-        if not (conn["id"] is not None and boot_id is not None and boot_id in conn["boots"]):
-            cur = db.execute("INSERT INTO connections(start_t, end_t) VALUES(?,?)", (now, now))
-            conn["id"], conn["boots"] = cur.lastrowid, set()
+    stale = conn["id"] is None or now - conn["last"] > ACTIVE_S
+    known = boot_id is not None and boot_id in conn["boots"]
+    rebooted = (board is not None and boot_id is not None
+                and conn["boards"].get(board, boot_id) != boot_id)
+    if conn["id"] is None or rebooted or (stale and not known):
+        cur = db.execute("INSERT INTO connections(start_t, end_t) VALUES(?,?)", (now, now))
+        conn["id"], conn["boots"], conn["boards"] = cur.lastrowid, set(), {}
     if boot_id is not None:
         conn["boots"].add(boot_id)
+        if board is not None:
+            conn["boards"][board] = boot_id
     conn["last"] = now
     db.execute("UPDATE connections SET end_t=? WHERE id=?", (now, conn["id"]))
     return conn["id"]
@@ -103,7 +115,7 @@ def _status():
     now = time.time()
     cid = conn["id"]
     if cid is None or now - conn["last"] > ACTIVE_S:
-        return {"active": False, "now": now}
+        return {"active": False, "page": PAGE_VERSION(), "now": now}
     since = now - WINDOW
     start_t, vin = db.execute("SELECT start_t, vin FROM connections WHERE id=?", (cid,)).fetchone()
     fail = db.execute("SELECT note FROM events WHERE conn=? AND kind='vin_fail' ORDER BY t DESC LIMIT 1",
@@ -146,7 +158,7 @@ def _status():
               for t, b, c, i, d, x in db.execute(
                   "SELECT t, board, ch, id, dlc, data FROM frames WHERE conn=? ORDER BY t DESC LIMIT 40",
                   (cid,))]
-    return {"active": True, "car": car, "now": now, "window": WINDOW,
+    return {"active": True, "page": PAGE_VERSION(), "car": car, "now": now, "window": WINDOW,
             "boards": sorted(boards.values(), key=lambda x: x["board"]),
             "channels": [chans[k] for k in sorted(chans)], "ids": ids, "recent": recent}
 
@@ -190,7 +202,7 @@ class H(BaseHTTPRequestHandler):
                            (int(g("board") or 0), g("ssid"), g("ip"), g("bssid"), now, self.client_address[0]))
                 # Once a board knows the VIN it repeats it here, so a server restart mid-drive
                 # still labels the new connection.
-                if VIN_RE.match(g("vin")) and conn["id"] is not None and now - conn["last"] <= CONN_GAP_S:
+                if VIN_RE.match(g("vin")) and conn["id"] is not None and now - conn["last"] <= ACTIVE_S:
                     set_vin(conn["id"], g("vin"))
                 db.commit()
             return self._send(200, b"ok", "text/plain")
@@ -230,7 +242,7 @@ class H(BaseHTTPRequestHandler):
             ts, fid, ch, flags, dlc, _, data = REC.unpack_from(body, hdr.size + i * REC.size)
             recs.append((rx - (t_send - ts) / 1e6, board, boot_id, ch, fid, flags, dlc, data[:dlc]))
         with db_lock:
-            cid = touch_conn(rx, boot_id)
+            cid = touch_conn(rx, board, boot_id)
             db.executemany("""INSERT INTO frames(t,board,boot_id,ch,id,flags,dlc,data,conn)
                               VALUES(?,?,?,?,?,?,?,?,?)""", [r + (cid,) for r in recs])
             db.execute("INSERT INTO batches VALUES(?,?,?,?,?,?)", (rx, board, boot_id, count, dropped, rssi))
