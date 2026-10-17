@@ -124,7 +124,7 @@ function render(d) {
       <span class="badge">boot ${b.boot_id.toString(16)}</span></div>
       <div class="sub">${b.ssid ? esc(b.ssid) : "network unknown"} &nbsp;${rssiBars(b.rssi)}</div>
       <div class="sub">last upload ${fmtAge(b.last_rx_age)}</div>
-      <div class="sub">${b.batches} batches · dropped ${b.dropped}</div></div>`;
+      ${b.dropped > 0 ? `<div class="sub" style="color:var(--bad)">dropped ${b.dropped.toLocaleString()} frames</div>` : ""}</div>`;
   }).join("") : `<div class="empty">No board has uploaded yet.</div>`;
 
   $("chans").innerHTML = d.channels.map(c => {
