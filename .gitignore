@@ -4,3 +4,6 @@
 include/config_local.h
 server/*.db
 server/__pycache__/
+server/*.db-wal
+server/*.db-shm
+server/*.db-journal
