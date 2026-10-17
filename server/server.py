@@ -4,6 +4,8 @@
 POST /ingest   binary batch from a logger board (see src/log_format.h)
 GET  /stats    per board/channel frame counts + last seen
 GET  /frames   ?board=1&ch=0&limit=100  newest frames as JSON
+GET  /         live dashboard (server/dashboard.html, polls /api/status)
+GET  /api/status  boards, channels, live IDs and recent frames as JSON
 Run:  python3 server.py [--port 8000] [--db canlog.db]
 """
 import argparse, json, os, sqlite3, struct, time
@@ -32,6 +34,45 @@ def init_db(path):
         rx REAL, board INTEGER, boot_id INTEGER, count INTEGER, dropped INTEGER)""")
     c.commit()
     return c
+
+
+WINDOW = 10.0   # seconds used for rates and the live-ID table
+
+
+def status():
+    now = time.time()
+    since = now - WINDOW
+    boards = {}
+    for b, rx, boot, dropped, nb in db.execute(
+            """SELECT board, MAX(rx), boot_id, dropped, COUNT(*) FROM batches
+               GROUP BY board"""):
+        boards[b] = {"board": b, "last_rx_age": now - rx, "boot_id": boot,
+                     "dropped": dropped, "batches": nb}
+    chans = {}
+    for b, brd in CHANNELS.items():
+        for ci, letter in enumerate("AB"):
+            info = brd.get(letter, {})
+            chans[(int(b), ci)] = {"board": int(b), "ch": letter, "name": info.get("name"),
+                                   "fd": info.get("fd"), "total": 0, "rate": 0.0, "last_age": None}
+    for b, c, n, last in db.execute(
+            "SELECT board, ch, COUNT(*), MAX(t) FROM frames GROUP BY board, ch"):
+        d = chans.setdefault((b, c), {"board": b, "ch": "AB"[c], "name": None, "fd": None})
+        d.update(total=n, last_age=now - last)
+    for b, c, n in db.execute(
+            "SELECT board, ch, COUNT(*) FROM frames WHERE t>? GROUP BY board, ch", (since,)):
+        if (b, c) in chans:
+            chans[(b, c)]["rate"] = n / WINDOW
+    ids = [{"board": b, "ch": "AB"[c], "id": f"0x{i:03X}", "rate": n / WINDOW,
+            "dlc": d, "data": bytes(x).hex(" ")}
+           for b, c, i, n, d, x in db.execute(
+               """SELECT board, ch, id, COUNT(*), dlc, data FROM frames WHERE t>?
+                  GROUP BY board, ch, id ORDER BY board, ch, id LIMIT 300""", (since,))]
+    recent = [{"age": now - t, "board": b, "ch": "AB"[c], "id": f"0x{i:03X}",
+               "dlc": d, "data": bytes(x).hex(" ")}
+              for t, b, c, i, d, x in db.execute(
+                  "SELECT t, board, ch, id, dlc, data FROM frames ORDER BY t DESC LIMIT 40")]
+    return {"now": now, "window": WINDOW, "boards": sorted(boards.values(), key=lambda x: x["board"]),
+            "channels": [chans[k] for k in sorted(chans)], "ids": ids, "recent": recent}
 
 
 class H(BaseHTTPRequestHandler):
@@ -85,7 +126,12 @@ class H(BaseHTTPRequestHandler):
             rows = [{"t": t, "board": b, "ch": "AB"[c], "id": f"0x{i:X}", "ext": bool(f & 1),
                      "dlc": d, "data": bytes(x).hex()} for t, b, c, i, f, d, x in db.execute(sql, args)]
             return self._send(200, json.dumps(rows).encode())
-        self._send(200, b"CAN logger server. See /stats and /frames.\n", "text/plain")
+        if u.path == "/api/status":
+            return self._send(200, json.dumps(status()).encode())
+        if u.path in ("/", "/index.html"):
+            return self._send(200, open(os.path.join(HERE, "dashboard.html"), "rb").read(),
+                              "text/html; charset=utf-8")
+        self._send(404)
 
     def log_message(self, *a):
         pass

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAN Logger</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1b1f24; --mute:#6b7280; --line:#e3e6ea;
+          --ok:#16803c; --warn:#b45309; --bad:#b91c1c; --accent:#2563eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1216; --card:#171b21; --fg:#e6e8eb; --mute:#8b94a1; --line:#262c34;
+            --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; --accent:#60a5fa; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:16px; }
+  header { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px; }
+  h1 { font-size:18px; margin:0; } h2 { font-size:13px; margin:0 0 8px; color:var(--mute);
+       text-transform:uppercase; letter-spacing:.05em; font-weight:600; }
+  .conn { font-size:12px; color:var(--mute); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:12px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .card .t { display:flex; justify-content:space-between; font-weight:600; }
+  .big { font-size:26px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .sub { color:var(--mute); font-size:12px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; background:var(--mute); }
+  .ok .dot { background:var(--ok); } .warn .dot { background:var(--warn); } .bad .dot { background:var(--bad); }
+  .badge { font-size:11px; border:1px solid var(--line); border-radius:99px; padding:0 7px; color:var(--mute); }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:16px; }
+  .scroll { overflow:auto; max-height:360px; }
+  table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; }
+  th,td { text-align:left; padding:4px 10px 4px 0; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--mute); font-weight:600; font-size:12px; position:sticky; top:0; background:var(--card); }
+  td.m { font-family:ui-monospace,Menlo,monospace; }
+  .empty { color:var(--mute); padding:8px 0; }
+  select { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:3px 6px; }
+</style>
+</head>
+<body>
+<main>
+  <header><h1>CAN Logger</h1><span class="conn" id="conn">connecting…</span></header>
+
+  <h2>Boards</h2>
+  <div class="grid" id="boards"></div>
+
+  <h2>Channels</h2>
+  <div class="grid" id="chans"></div>
+
+  <section>
+    <h2>Live IDs, last <span id="win">10</span> s &nbsp;
+      <select id="flt"><option value="">all channels</option></select></h2>
+    <div class="scroll"><table><thead><tr><th>Board</th><th>Ch</th><th>ID</th><th>Rate (Hz)</th><th>DLC</th><th>Last data</th></tr></thead>
+    <tbody id="ids"></tbody></table></div>
+  </section>
+
+  <section>
+    <h2>Newest frames</h2>
+    <div class="scroll"><table><thead><tr><th>Age</th><th>Board</th><th>Ch</th><th>ID</th><th>DLC</th><th>Data</th></tr></thead>
+    <tbody id="recent"></tbody></table></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const fmtAge = a => a == null ? "never" : a < 1 ? "<1 s ago" : a < 90 ? Math.round(a) + " s ago" : Math.round(a/60) + " min ago";
+const esc = s => String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+let sel = "";
+$("flt").onchange = e => { sel = e.target.value; };
+
+function render(d) {
+  $("win").textContent = d.window;
+  $("boards").innerHTML = d.boards.length ? d.boards.map(b => {
+    const cls = b.last_rx_age < 5 ? "ok" : b.last_rx_age < 30 ? "warn" : "bad";
+    return `<div class="card ${cls}"><div class="t"><span><span class="dot"></span>Board ${b.board}</span>
+      <span class="badge">boot ${b.boot_id.toString(16)}</span></div>
+      <div class="sub">last upload ${fmtAge(b.last_rx_age)}</div>
+      <div class="sub">${b.batches} batches · dropped ${b.dropped}</div></div>`;
+  }).join("") : `<div class="empty">No board has uploaded yet.</div>`;
+
+  $("chans").innerHTML = d.channels.map(c => {
+    const cls = c.last_age == null ? "" : c.last_age < 5 ? "ok" : c.last_age < 30 ? "warn" : "bad";
+    return `<div class="card ${cls}"><div class="t"><span><span class="dot"></span>${esc(c.name || "?")}</span>
+      <span class="badge">B${c.board} ${c.ch} · ${c.fd ? "FD-capable" : "classic"}</span></div>
+      <div class="big">${c.rate.toFixed(1)} <span class="sub">fps</span></div>
+      <div class="sub">${c.total.toLocaleString()} total · ${fmtAge(c.last_age)}</div></div>`;
+  }).join("");
+
+  const opts = d.channels.map(c => `${c.board}${c.ch}`);
+  const f = $("flt");
+  if (f.options.length - 1 !== opts.length) {
+    f.innerHTML = `<option value="">all channels</option>` +
+      d.channels.map(c => `<option value="${c.board}${c.ch}">B${c.board} ${c.ch} ${esc(c.name || "")}</option>`).join("");
+    f.value = sel;
+  }
+  const ids = d.ids.filter(i => !sel || `${i.board}${i.ch}` === sel);
+  $("ids").innerHTML = ids.length ? ids.map(i => `<tr><td>${i.board}</td><td>${i.ch}</td>
+    <td class="m">${i.id}</td><td>${i.rate.toFixed(1)}</td><td>${i.dlc}</td><td class="m">${i.data}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="empty">No frames in the last ${d.window} s.</td></tr>`;
+  $("recent").innerHTML = d.recent.length ? d.recent.map(r => `<tr><td>${r.age.toFixed(2)} s</td><td>${r.board}</td>
+    <td>${r.ch}</td><td class="m">${r.id}</td><td>${r.dlc}</td><td class="m">${r.data}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="empty">No frames yet.</td></tr>`;
+}
+
+async function tick() {
+  try {
+    const r = await fetch("/api/status", {cache: "no-store"});
+    render(await r.json());
+    $("conn").textContent = "live · " + new Date().toLocaleTimeString();
+  } catch (e) {
+    $("conn").textContent = "server unreachable";
+  }
+}
+tick(); setInterval(tick, 1000);
+</script>
+</body>
+</html>
