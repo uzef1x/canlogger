@@ -39,9 +39,18 @@ source and is paywalled; verify against it or by meter before connecting.
   IO3 to (1) the MCP2518FD's INT1 pin and (2) the expansion-header IO3 net. Neither is on the
   SPI or INT# path the logger uses, so the switch positions should not affect logging.
   Not yet proven on a live bus.
-- **Hardware revision:** the schematic is V1.0 and shows a TD501MCAN transceiver module. The
-  boards in hand (own photos, date codes 2619/2622/2623) carry **TD501MCANFD** modules, so
-  they are a newer revision than the schematic and may differ in details.
+- **Hardware revision:** the underside silkscreen reads `T_2CAN_FD`, `2026-3-24`, `V1.0`, so
+  it carries the same version label as the schematic. But the CAN modules on the board are
+  **TD501MCANFD** (own photos, date codes 2619/2622/2623) while the schematic draws
+  `TD501MCAN`. Treat the schematic as a close guide, not exact.
+- **Terminal labels (own underside photo, printed next to the solder pads):**
+  each block is `DGND · CANH · CANL · SGND`, port B and port A as separate blocks.
+  Seen from the component side with the screw terminals at the top edge and USB-C at
+  bottom-left, I worked out (from the flipped photo geometry, not from a printed marking on
+  the top side) that the 8 screws read left to right:
+  `DGNDB CANHB CANLB SGNDB | DGNDA CANHA CANLA SGNDA`,
+  i.e. the left block is port B (classic) and the right block is port A (CAN-FD).
+  **Confirm by eye on the underside before wiring.**
 - **Termination confirmed on the real board:** a `121` (120 ohm) resistor is visible beside
   the common-mode choke of both CAN ports. Fixed, no switch.
 - Power input range: not stated by LilyGo's wiki. The same page recommends 12 V instead of 5 V
