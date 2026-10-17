@@ -255,6 +255,7 @@ void canbus_vin_feed(const LogRecord &r) {
   if (g_vin_state == V_WAIT_FF) {
     if (pci == 0x00) {                          // single frame
       if (r.data[1] == 0x7F) {
+        if (r.data[2] != c.req[1]) return;       // refusal of some other (earlier) request: not ours
         if (r.data[3] == 0x78) { g_vin_deadline = millis() + 2000; return; }   // response pending
         char w[8];
         snprintf(w, sizeof(w), "nrc%02X", r.data[3]);
