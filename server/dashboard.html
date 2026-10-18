@@ -181,18 +181,11 @@ function renderDecoded(d) {
     const spread = Math.max(...cv) - Math.min(...cv);
     const range = `${Math.min(...cv)}–${Math.max(...cv)} mV, average ${Math.round(avg)} mV`;
     // Limits: spread up to 30 mV is good (the Autel report's voltage delta threshold), over 100 mV is
-    // bad (forum rule of thumb), in between is a warning. A single cell is judged against the average:
-    // within 15 mV good, up to 50 mV warning, beyond that bad (these two are our own numbers).
-    // Only judged while the pack current is small: a healthy pack shows up to ~50 mV under heavy load.
-    const cur = (pol.find(v => v.name === "Pack current (1)") || {}).value;
-    const judged = typeof cur === "number" && Math.abs(cur) <= 5;
+    // bad (forum rule of thumb), in between is a warning. Judged at any pack current.
     const lvl = (v, good, bad) => v <= good ? "ok" : v <= bad ? "warn" : "bad";
-    const tint = k => `color-mix(in srgb, var(--${k}) 35%, transparent)`;
-    const verdict = judged
-      ? {ok: "Good", warn: "Warning", bad: "Bad"}[lvl(spread, 30, 100)] : "Not judged";
-    const vk = judged ? lvl(spread, 30, 100) : "";
-    const note = judged ? "limits: good up to 30 mV, warning up to 100 mV, bad above"
-      : `pack current ${cur == null ? "unknown" : cur + " A"}; judged only within ±5 A`;
+    const verdict = {ok: "Good", warn: "Warning", bad: "Bad"}[lvl(spread, 30, 100)];
+    const vk = lvl(spread, 30, 100);
+    const note = "limits: good up to 30 mV, warning up to 100 mV, bad above";
     // 24 modules of 4 consecutive cells, as in the Autel battery report of this car.
     const rows = [];
     for (let m = 0; m < 24 && m * 4 < d.cells.length; m++) {
