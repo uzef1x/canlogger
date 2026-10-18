@@ -30,5 +30,16 @@ void canbus_vin_tick();                             // capture task, every loop
 void canbus_vin_feed(const LogRecord &r);           // capture task, each CH_B frame
 // Returns true once when a result is ready. ok=false means no candidate worked;
 // note says why for each, e.g. "A-timeout_B-nrc31_C-nrc80".
+// ── ZE1 active mode ─────────────────────────────────────────────────────────
+// Some cars (the ZE1) put nothing on the OBD port by themselves; data only appears when
+// it is asked for. If CAR-CAN has never been alive in this boot and stays silent 15 s
+// after power-on, the logger sends the read-only requests below one by one and logs the
+// replies. If none is answered it goes back to listen-only and tries again after a
+// minute (5 times at most). A car whose CAR-CAN has been alive in this boot is never probed.
+//   0x797  21 81      VIN (charger/VCM)        reply 0x79A
+//   0x79B  21 01      battery group 1 (LBC)    reply 0x7BB
+//   0x743  22 0E 01   odometer (meter)         reply 0x763
+void canbus_active_auto(bool bus_alive);            // capture task, ~once per second
+const char *canbus_mode();                          // "unknown", "passive" or "active"
 bool canbus_tx_pop(LogRecord &r);                   // capture task: frames this logger transmitted
 bool canbus_vin_take(char vin[18], bool &ok, char note[48]);

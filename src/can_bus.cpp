@@ -177,6 +177,10 @@ static uint32_t g_auto_next = 3000;      // not before 3 s after boot
 static constexpr uint8_t  AUTO_MAX_TRIES = 10;
 static constexpr uint32_t AUTO_RETRY_MS  = 10000;
 
+static void act_feed(const LogRecord &r);
+static void act_tick(uint32_t now);
+static bool act_busy();
+
 static void vin_set_mode(twai_mode_t m) {
   twai_stop();
   twai_driver_uninstall();
@@ -249,7 +253,7 @@ void canbus_vin_request() { g_vin_req = true; }
 void canbus_vin_auto_enable() { g_auto = true; }
 
 void canbus_vin_auto(bool bus_alive) {
-  if (!g_auto || g_vin_known || g_vin_state != V_IDLE || g_vin_req) return;
+  if (!g_auto || g_vin_known || g_vin_state != V_IDLE || g_vin_req || act_busy()) return;
   if (g_auto_tries >= AUTO_MAX_TRIES || !bus_alive) return;
   const uint32_t now = millis();
   if ((int32_t)(now - g_auto_next) < 0) return;
@@ -266,6 +270,7 @@ bool canbus_vin_known(char out[18]) {
 
 void canbus_vin_tick() {
   const uint32_t now = millis();
+  if (act_busy()) { act_tick(now); return; }
   if (g_vin_state == V_IDLE) {
     if (!g_vin_req) return;
     g_vin_req = false;
@@ -304,6 +309,7 @@ void canbus_vin_tick() {
 }
 
 void canbus_vin_feed(const LogRecord &r) {
+  act_feed(r);
   if (g_vin_state < V_WAIT_SESS) return;
   if (r.id != VIN_RSP_ID || (r.flags & FLAG_EXT)) return;
   const VinCand &c = CANDS[g_vin_cand];
@@ -380,4 +386,141 @@ bool canbus_vin_take(char out[18], bool &ok, char note[48]) {
   memcpy(note, g_vin_note, 48);
   if (!ok) out[0] = 0;
   return true;
+}
+
+// ── ZE1 active mode ──────────────────────────────────────────────────────────
+enum ActState : uint8_t { A_OFF, A_SETTLE, A_IDLE, A_WAIT, A_CF };
+struct PollReq { uint32_t req_id, rsp_id; uint8_t req[8]; };
+static const PollReq POLLS[] = {
+  {0x797, 0x79A, {0x02, 0x21, 0x81, 0, 0, 0, 0, 0}},         // VIN
+  {0x79B, 0x7BB, {0x02, 0x21, 0x01, 0, 0, 0, 0, 0}},         // battery group 1
+  {0x743, 0x763, {0x03, 0x22, 0x0E, 0x01, 0, 0, 0, 0}},      // odometer
+};
+static constexpr uint8_t N_POLLS = sizeof(POLLS) / sizeof(POLLS[0]);
+static constexpr uint32_t ACT_START_MS = 15000;   // earliest first probe after power-on
+static constexpr uint32_t ACT_RETRY_MS = 60000;   // between failed probes
+static constexpr uint32_t ACT_CYCLE_MS = 10000;   // between polling cycles once confirmed
+static constexpr uint8_t  ACT_MAX_PROBES = 5;
+
+static ActState g_act = A_OFF;
+static uint8_t  g_act_idx = 0;
+static uint32_t g_act_next = 0, g_act_deadline = 0, g_act_probe_at = ACT_START_MS;
+static uint8_t  g_act_probes = 0;
+static bool     g_act_cycle_ok = false, g_act_confirmed = false, g_seen_alive = false;
+static uint8_t  g_act_buf[40];
+static uint16_t g_act_len = 0, g_act_got = 0;
+static uint8_t  g_act_sn = 1;
+
+static bool act_busy() { return g_act != A_OFF; }
+
+const char *canbus_mode() {
+  return g_act_confirmed ? "active" : g_seen_alive ? "passive" : "unknown";
+}
+
+void canbus_active_auto(bool bus_alive) {
+  if (bus_alive) { g_seen_alive = true; return; }
+  if (g_seen_alive || g_act != A_OFF || g_vin_state != V_IDLE || g_vin_req) return;
+  const uint32_t now = millis();
+  if (g_act_probes >= ACT_MAX_PROBES || (int32_t)(now - g_act_probe_at) < 0) return;
+  g_act_probes++;
+  Serial.printf("[act] CAR-CAN silent, probing (%u/%u)\n", g_act_probes, ACT_MAX_PROBES);
+  vin_set_mode(TWAI_MODE_NORMAL);
+  g_act_idx = 0;
+  g_act_cycle_ok = false;
+  g_act_next = now + 150;          // let the controller sync to the bus first
+  g_act = A_SETTLE;
+}
+
+// Advance to the next request, or finish the cycle.
+static void act_next(uint32_t now) {
+  g_act_idx++;
+  if (g_act_idx < N_POLLS) { g_act = A_IDLE; g_act_next = now + 200; return; }
+  if (g_act_cycle_ok) {
+    if (!g_act_confirmed) Serial.println("[act] car answers: active mode");
+    g_act_confirmed = true;
+  }
+  if (g_act_confirmed) {
+    g_act_idx = g_vin_known ? 1 : 0;
+    g_act_cycle_ok = false;
+    g_act = A_IDLE;
+    g_act_next = now + ACT_CYCLE_MS;
+    return;
+  }
+  Serial.println("[act] no answer, back to listen-only");
+  vin_set_mode(TWAI_MODE_LISTEN_ONLY);
+  g_act = A_OFF;
+  g_act_probe_at = now + ACT_RETRY_MS;
+}
+
+static void act_done(bool ok, uint32_t now) {
+  if (ok) g_act_cycle_ok = true;
+  act_next(now);
+}
+
+static void act_tick(uint32_t now) {
+  if (g_act == A_SETTLE || g_act == A_IDLE) {
+    if ((int32_t)(now - g_act_next) < 0) return;
+    vin_tx(POLLS[g_act_idx].req_id, POLLS[g_act_idx].req);
+    g_act = A_WAIT;
+    g_act_deadline = now + 1500;
+    return;
+  }
+  if ((int32_t)(now - g_act_deadline) > 0) act_done(false, now);
+}
+
+static void act_feed(const LogRecord &r) {
+  if (g_act != A_WAIT && g_act != A_CF) return;
+  const PollReq &p = POLLS[g_act_idx];
+  if (r.id != p.rsp_id || (r.flags & FLAG_EXT)) return;
+  const uint8_t pci = r.data[0] & 0xF0;
+  const uint32_t now = millis();
+
+  if (g_act == A_WAIT) {
+    if (pci == 0x00) {
+      if (r.data[1] == 0x7F && r.data[2] == p.req[1]) {
+        if (r.data[3] == 0x78) { g_act_deadline = now + 2000; return; }   // response pending
+        act_done(false, now);
+      } else if (r.data[1] == (uint8_t)(p.req[1] + 0x40)) {
+        act_done(true, now);
+      }
+      return;
+    }
+    if (pci != 0x10) return;
+    g_act_len = ((r.data[0] & 0x0F) << 8) | r.data[1];
+    memcpy(g_act_buf, r.data + 2, 6);
+    g_act_got = 6;
+    g_act_sn = 1;
+    const uint8_t fc[8] = {0x30, 0x00, 0x00, 0, 0, 0, 0, 0};
+    vin_tx(p.req_id, fc);
+    g_act = A_CF;
+    g_act_deadline = now + 4000;
+    return;
+  }
+
+  if (pci != 0x20 || (r.data[0] & 0x0F) != (g_act_sn & 0x0F)) return;
+  const uint16_t take = min<uint16_t>(7, g_act_len - g_act_got);
+  if (g_act_got < sizeof(g_act_buf))
+    memcpy(g_act_buf + g_act_got, r.data + 1, min<uint16_t>(take, sizeof(g_act_buf) - g_act_got));
+  g_act_got += take;
+  g_act_sn++;
+  if (g_act_got < g_act_len) return;
+
+  bool ok = g_act_buf[0] == (uint8_t)(p.req[1] + 0x40);
+  if (ok && g_act_idx == 0) {          // the VIN: 61 81 then 17 characters
+    char text[18] = {0};
+    ok = g_act_buf[1] == 0x81 && g_act_len >= 19;
+    for (int i = 0; i < 17 && ok; i++) {
+      const uint8_t ch = g_act_buf[2 + i];
+      text[i] = (char)ch;
+      if (!((ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z'))) ok = false;
+    }
+    if (ok && !g_vin_known) {
+      memcpy(g_vin_text, text, 18);
+      strcpy(g_vin_note, "Z-ok");
+      g_vin_ok = true;
+      g_vin_known = true;
+      g_vin_done = true;
+    }
+  }
+  act_done(ok, now);
 }
