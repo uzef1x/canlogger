@@ -215,14 +215,16 @@ function renderDecoded(d) {
       <div class="card"><div class="scroll" style="max-height:none"><table><thead><tr>
       <th>Module</th><th>Voltage</th><th>Cell 1</th><th>Cell 2</th><th>Cell 3</th><th>Cell 4</th></tr></thead>
       <tbody>${rows.join("")}</tbody></table></div></div>`;
-    const tm = t => new Date(t * 1000).toLocaleTimeString(), sg = v => (v > 0 ? "+" : "") + v + " mV";
-    const hist = (d.history || []).map(e => `<tr><td>M${e.module}</td>
-      <td class="m">${Object.entries(e.cells).sort((a, b) => a[0] - b[0]).map(([n, v]) =>
-        `<b>${sg(v)}</b> <span class="sub">cell ${n}</span>`).join(" &nbsp; ")}</td>
-      <td class="m">${sg(e.min)}</td><td class="m">${sg(e.max)}</td><td class="m">${tm(e.first)}</td></tr>`).join("");
+    const tm = t => new Date(t * 1000).toLocaleTimeString([], {hour12: false});
+    const col = v => v < 0 ? "hsl(215 70% 65%)" : "hsl(0 70% 65%)";
+    const hist = (d.history || []).map(e => `<tr><td><b>M${e.module}</b></td><td>#${e.cell}</td>
+      <td class="m">${(e.lo / 1000).toFixed(3)} V</td><td class="m">${(e.hi / 1000).toFixed(3)} V</td>
+      <td class="m" style="color:${col(e.peak)}"><b>${e.peak > 0 ? "+" : ""}${e.peak} mV</b></td>
+      <td class="m">${tm(e.first)}</td></tr>`).join("");
     $("cells").innerHTML += `<div class="card" style="margin-top:8px"><div class="scroll" style="max-height:none"><table><thead><tr>
-      <th>Out of balance</th><th>Peak from average, each affected cell</th><th>Lowest</th><th>Highest</th><th>First out</th></tr></thead>
-      <tbody>${hist || `<tr><td colspan="5" class="empty">No module out of balance in this session.</td></tr>`}</tbody></table></div></div>`;
+      <th colspan="6">Cells that went out of balance (more than 10 mV from the average)</th></tr><tr>
+      <th>Module</th><th>Cell</th><th>Lowest</th><th>Highest</th><th>Worst vs average</th><th>First out</th></tr></thead>
+      <tbody>${hist || `<tr><td colspan="6" class="empty">None in this session.</td></tr>`}</tbody></table></div></div>`;
   }
   const sg = d.signals || [];
   $("sigsum").textContent = !d.have_dbc ? "(signal files missing: run server/fetch_dbc.sh)"

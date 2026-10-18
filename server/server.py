@@ -203,35 +203,30 @@ def decoded(cid=None):
             "polled": pol, "cells": cv, "fast": fast["on"], "history": balance_history(cid, cv, now)}
 
 
-# Modules that went out of balance (a cell more than 10 mV from the average) in the current
-# session, one entry per module with its peaks like the min/max of a meter. Kept per connection,
-# so a new session (new connection) starts with an empty list.
+# Cells that went out of balance (more than 10 mV from the pack average) in the current session,
+# one entry per cell with its lowest and highest voltage and its worst deviation, like the min/max
+# of a meter. Kept per connection, so a new session (new connection) starts with an empty list.
 balance_state = {}
 
 
 def balance_history(cid, cv, now):
     for old in [k for k in balance_state if k != cid]:
         del balance_state[old]
-    mods = balance_state.setdefault(cid, {})
+    cells = balance_state.setdefault(cid, {})
     if len(cv) >= 4:
         avg = round(sum(cv) / len(cv))
-        for m in range(len(cv) // 4):
-            devs = [c - avg for c in cv[4 * m:4 * m + 4]]
-            worst = max(devs, key=abs)
-            e = mods.get(m + 1)
-            if e is None and abs(worst) > 10:
-                e = mods[m + 1] = {"module": m + 1, "first": now, "peak": 0, "min": 0, "max": 0, "cells": {}}
+        for i, c in enumerate(cv):
+            dv = c - avg
+            e = cells.get(i + 1)
+            if e is None and abs(dv) > 10:
+                e = cells[i + 1] = {"cell": i + 1, "module": i // 4 + 1, "first": now,
+                                    "lo": c, "hi": c, "peak": dv}
             if e is None:
                 continue
-            if abs(worst) > abs(e["peak"]):
-                e.update(peak=worst, cell=4 * m + devs.index(worst) + 1, t=now)
-            for i, dv in enumerate(devs):          # every cell that went past the limit, with its own peak
-                n = str(4 * m + i + 1)
-                if abs(dv) > 10 and abs(dv) > abs(e["cells"].get(n, 0)):
-                    e["cells"][n] = dv
-            e["min"] = min(e["min"], min(devs))
-            e["max"] = max(e["max"], max(devs))
-    return sorted(mods.values(), key=lambda e: -abs(e["peak"]))
+            e["lo"], e["hi"] = min(e["lo"], c), max(e["hi"], c)
+            if abs(dv) > abs(e["peak"]):
+                e["peak"] = dv
+    return sorted(cells.values(), key=lambda e: e["cell"])
 
 
 def cars():
