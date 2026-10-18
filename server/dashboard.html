@@ -58,7 +58,7 @@
   <div id="valbox" style="display:none">
     <div id="vals"></div>
     <div id="cellbox" style="display:none">
-      <h2>Battery cell voltages</h2>
+      <h2>Battery cell voltages <button id="fastbtn" onclick="toggleFast()" style="margin-left:8px"></button></h2>
       <div id="cells"></div>
     </div>
   </div>
@@ -233,10 +233,16 @@ function renderDecoded(d) {
     <td>${esc(x.sig)}</td><td class="m">${esc(x.text ?? x.value)}${x.text != null ? ` <span class="sub">(${esc(x.value)})</span>` : ""}</td>
     <td>${esc(x.unit)}</td></tr>`).join("") : `<tr><td colspan="5" class="empty">No decoded signals.</td></tr>`;
 }
+let fastOn = false;
+async function toggleFast() {
+  try { fastOn = (await (await fetch("/api/fast?on=" + (fastOn ? 0 : 1), {method: "POST"})).json()).on; } catch (e) {}
+  showFast();
+}
+function showFast() { $("fastbtn").textContent = fastOn ? "Fast polling ON (~5 s): switch off" : "Fast polling (~5 s)"; }
 async function tickDecoded() {
   try {
     const d = await (await fetch("/api/decoded", {cache: "no-store"})).json();
-    if (d.active) renderDecoded(d);
+    if (d.active) { fastOn = !!d.fast; showFast(); renderDecoded(d); }
   } catch (e) {}
 }
 

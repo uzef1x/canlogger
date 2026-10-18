@@ -101,6 +101,7 @@ static void uplink_task(void *) {
     if (http.begin(SERVER_URL)) {
       http.addHeader("Content-Type", "application/octet-stream");
       code = http.POST(g_body, sizeof(LogHeader) + n * sizeof(LogRecord));
+      if (code == 200) canbus_set_fast_cells(http.getString().indexOf("fast") >= 0);
       http.end();
     }
     if (code == 200) {

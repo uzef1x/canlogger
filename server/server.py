@@ -35,6 +35,7 @@ ACTIVE_S = 15.0    # no upload for this long = the car is disconnected (dashboar
 db = None
 db_lock = threading.Lock()   # one shared sqlite connection: serialise every use
 polled_states = {}      # connection id -> decode.Polled (incremental reassembly of polled replies)
+fast = {"on": False}      # dashboard switch: poll the cell voltages every cycle (~5 s) instead of every 3rd (~15 s)
 conn = {"id": None, "last": 0.0, "boots": set(), "boards": {}}   # the current/most recent connection
 
 
@@ -199,7 +200,7 @@ def decoded(cid=None):
     cells = ps.msgs.get((0x7BB, 0x61, 0x02))
     cv = decode.cell_voltages(cells[0]) if cells else []
     return {"active": True, "vin": vin, "dbc": label, "have_dbc": have_dbc, "signals": sigs,
-            "polled": pol, "cells": cv, "history": balance_history(cid, cv, now)}
+            "polled": pol, "cells": cv, "fast": fast["on"], "history": balance_history(cid, cv, now)}
 
 
 # Modules that went out of balance (a cell more than 10 mV from the average) in the current
@@ -286,6 +287,9 @@ class H(BaseHTTPRequestHandler):
                            (now, board, "vin" if ok else "vin_fail", vin if ok else None, note, cid))
                 db.commit()
             return self._send(200, b"ok", "text/plain")
+        if u.path == "/api/fast":                  # dashboard button
+            fast["on"] = parse_qs(u.query).get("on", ["0"])[0] == "1"
+            return self._send(200, json.dumps(fast).encode())
         if u.path != "/ingest":
             return self._send(404)
         rx = time.time()
@@ -313,7 +317,7 @@ class H(BaseHTTPRequestHandler):
                               VALUES(?,?,?,?,?,?,?,?,?)""", [r + (cid,) for r in recs])
             db.execute("INSERT INTO batches VALUES(?,?,?,?,?,?)", (rx, board, boot_id, count, dropped, rssi))
             db.commit()
-        self._send(200, b"ok", "text/plain")
+        self._send(200, b"ok fast" if fast["on"] else b"ok", "text/plain")   # the board reads the flag
 
     def do_GET(self):
         u = urlparse(self.path)

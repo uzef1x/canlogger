@@ -40,6 +40,7 @@ void canbus_vin_feed(const LogRecord &r);           // capture task, each CH_B f
 //   0x79B  21 01      battery group 1 (LBC)    reply 0x7BB
 //   0x743  22 0E 01   odometer (meter)         reply 0x763
 void canbus_active_auto(bool bus_alive);            // capture task, ~once per second
+void canbus_set_fast_cells(bool on);                // faster cell-voltage polling (dashboard button)
 const char *canbus_mode();                          // "unknown", "passive" or "active"
 bool canbus_tx_pop(LogRecord &r);                   // capture task: frames this logger transmitted
 bool canbus_vin_take(char vin[18], bool &ok, char note[48]);

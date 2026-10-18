@@ -485,6 +485,11 @@ static bool     g_act_done[N_POLLS];
 
 static bool act_busy() { return g_act != A_OFF; }
 
+// Set from the server's reply to an upload: poll the cell voltages every cycle, not every 3rd.
+// It only changes how often the same fixed request is sent; the server cannot send anything else.
+static volatile bool g_fast_cells = false;
+void canbus_set_fast_cells(bool on) { g_fast_cells = on; }
+
 const char *canbus_mode() {
   return g_act_confirmed ? "active" : g_seen_alive ? "passive" : "unknown";
 }
@@ -493,8 +498,10 @@ const char *canbus_mode() {
 static bool act_due(uint8_t i) {
   if (!g_act_confirmed) return i < N_PROBE;
   const PollReq &p = POLLS[i];
-  if (p.every == 0) { if (g_act_done[i]) return false; }
-  else if (g_act_cycle % p.every != 0) return false;
+  const bool cells = p.req_id == 0x79B && p.req[1] == 0x21 && p.req[2] == 0x02;   // LBC cell voltages
+  const uint8_t every = (g_fast_cells && cells) ? 1 : p.every;
+  if (every == 0) { if (g_act_done[i]) return false; }
+  else if (g_act_cycle % every != 0) return false;
   if (g_act_fails[i] >= 3 && g_act_cycle % 30 != 0) return false;   // absent module: ask rarely
   return true;
 }
