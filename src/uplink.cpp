@@ -17,7 +17,7 @@ static uint32_t g_boot_id;
 static volatile uint32_t g_sent = 0;
 static uint8_t *g_body = nullptr;   // LogHeader + encoded batch
 static LogRecord *g_recs = nullptr;  // batch as peeked from the ring
-static uint8_t *g_prev = nullptr;    // encoder scratch
+static CodecWork *g_work = nullptr;  // encoder scratch
 
 // Two server addresses: the logger stays on one until two requests in a row fail, then tries the other.
 static uint8_t g_url_idx = 0, g_url_fails = 0;
@@ -128,13 +128,14 @@ static void uplink_task(void *) {
       continue;
     }
     const uint32_t n = ring_peek(g_recs, BATCH_RECORDS);
-    const size_t enc = log_encode(g_recs, n, g_body + sizeof(LogHeader), g_prev);
+    uint32_t used = n;
+    const size_t enc = log_encode(g_recs, n, g_body + sizeof(LogHeader), g_work, &used);
 
     LogHeader h;
     h.magic = LOG_MAGIC;
     h.board_id = LOGGER_BOARD_ID;
     h.version = LOG_VERSION;
-    h.count = (uint16_t)n;
+    h.count = (uint16_t)used;
     h.boot_id = g_boot_id;
     h.t_send_us = (uint64_t)esp_timer_get_time();   // stamped as late as possible
     h.dropped = ring_dropped();
@@ -156,13 +157,13 @@ static void uplink_task(void *) {
       if (code == 200) canbus_set_fast_cells(http.getString().indexOf("fast") >= 0);
       http.end();
     }
-    Serial.printf("[uplink] n=%lu %lu bytes code=%d %lu ms reused=%d\n", (unsigned long)n,
+    Serial.printf("[uplink] n=%lu %lu bytes code=%d %lu ms reused=%d\n", (unsigned long)used,
                   (unsigned long)enc, code, (unsigned long)(millis() - t0), (int)was_open);
     if (code == 200) {
-      ring_commit(n);
-      g_sent += n;
+      ring_commit(used);
+      g_sent += used;
       backoff = 500;
-      vTaskDelay(pdMS_TO_TICKS(n == BATCH_RECORDS ? 1 : 250));  // drain fast, idle slow
+      vTaskDelay(pdMS_TO_TICKS(used == BATCH_RECORDS ? 1 : 250));  // drain fast, idle slow
     } else {
       Serial.printf("[uplink] POST failed (%d), retry in %lu ms\n", code, (unsigned long)backoff);
       vTaskDelay(pdMS_TO_TICKS(backoff));
@@ -173,8 +174,10 @@ static void uplink_task(void *) {
 
 void uplink_start() {
   g_boot_id = esp_random();
-  g_body = (uint8_t *)ps_malloc(sizeof(LogHeader) + BATCH_RECORDS * CODEC_MAX_PER_RECORD);
+  g_body = (uint8_t *)ps_malloc(sizeof(LogHeader) + CODEC_OUT_BYTES(BATCH_RECORDS));
   g_recs = (LogRecord *)ps_malloc(BATCH_RECORDS * sizeof(LogRecord));
-  g_prev = (uint8_t *)ps_malloc(CODEC_PREV_BYTES);
+  g_work = (CodecWork *)ps_malloc(sizeof(CodecWork));
+  g_work->gidx = (uint16_t *)ps_malloc(BATCH_RECORDS * sizeof(uint16_t));
+  g_work->order = (uint16_t *)ps_malloc(BATCH_RECORDS * sizeof(uint16_t));
   xTaskCreatePinnedToCore(uplink_task, "uplink", 8192, nullptr, 1, nullptr, 0);
 }

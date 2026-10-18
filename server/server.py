@@ -17,7 +17,7 @@ GET  /stats, /frames   raw access
 Run:  python3 server.py [--port 8000] [--db canlog.db]
 """
 import argparse, json, os, re, sqlite3, struct, threading, time
-import decode
+import decode, export
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -25,6 +25,62 @@ HDR = struct.Struct("<IBBHIQI")       # v1: magic, board, ver, count, boot_id, t
 HDR2 = struct.Struct("<IBBHIQIb3x")   # v2: v1 + rssi (dBm) + 3 pad
 REC = struct.Struct("<QIBBBB8s")      # ts_us, id, ch, flags, dlc, reserved, data
 MAGIC = 0x31474C43
+
+
+def decode_v4(buf, off, count):
+    """Inverse of log_encode() in src/log_codec.h (wire v4). Returns [(ts_us, id, ch, flags, dlc, data)]
+    sorted by timestamp, or None if the body is not exactly `count` well-formed records."""
+    M = 0xFFFFFFFFFFFFFFFF
+    n = len(buf)
+
+    def varint(i):
+        v = shift = 0
+        while True:
+            if i >= n or shift > 63:
+                raise ValueError
+            b = buf[i]; i += 1
+            v |= (b & 0x7F) << shift
+            if not b & 0x80:
+                return v, i
+            shift += 7
+    out = []
+    try:
+        base, off = varint(off)
+        while len(out) < count:
+            tag = buf[off]; off += 1
+            ch, flags, dlc = tag & 1, (tag >> 1) & 7, tag >> 4
+            if dlc > 8:
+                return None
+            cid, off = varint(off)
+            k, off = varint(off)
+            if k == 0 or len(out) + k > count:
+                return None
+            pt, pd = base, 0
+            p1 = p2 = bytes(8)
+            for _ in range(k):
+                z, off = varint(off)
+                dod = (z >> 1) ^ -(z & 1)
+                dt = ((pd + dod + (1 << 63)) & M) - (1 << 63)         # wraps like the board's int64
+                pt = (pt + dt) & M
+                pd = dt
+                mask = buf[off]; off += 1
+                if mask >> dlc:
+                    return None
+                cur = bytearray(8)
+                for b in range(dlc):
+                    pred = (2 * p1[b] - p2[b]) & 255
+                    if mask >> b & 1:
+                        pred = (pred + buf[off]) & 255; off += 1
+                    cur[b] = pred
+                cur = bytes(cur)
+                p2, p1 = p1, cur
+                out.append((pt, cid, ch, flags, dlc, cur[:dlc]))
+    except (ValueError, IndexError):
+        return None
+    if off != n:
+        return None
+    out.sort(key=lambda r: r[0])
+    return out
 
 
 def decode_v3(buf, off, count):
@@ -78,6 +134,7 @@ WINDOW = 10.0      # seconds used for rates and the live-ID table
 ACTIVE_S = 15.0    # no upload for this long = the car is disconnected (dashboard empties)
 
 db = None
+DB_PATH = None
 db_lock = threading.Lock()   # one shared sqlite connection: serialise every use
 polled_states = {}      # connection id -> decode.Polled (incremental reassembly of polled replies)
 fast = {"on": False}      # dashboard switch: poll the cell voltages every cycle (~5 s) instead of every 3rd (~15 s)
@@ -395,22 +452,22 @@ class H(BaseHTTPRequestHandler):
             return self._send(400)
         ver = body[5]
         hdr = HDR2 if ver >= 2 else HDR
-        if ver not in (1, 2, 3) or len(body) < hdr.size:
+        if ver not in (1, 2, 3, 4) or len(body) < hdr.size:
             return self._send(400)
         vals = hdr.unpack_from(body)
         magic, board, _, count, boot_id, t_send, dropped = vals[:7]
         rssi = vals[7] if ver >= 2 else None
         if magic != MAGIC:
             return self._send(400)
-        if ver == 3:
-            got = decode_v3(body, hdr.size, count)
+        if ver >= 3:
+            got = (decode_v3 if ver == 3 else decode_v4)(body, hdr.size, count)
             if got is None:
                 return self._send(400)
         elif len(body) != hdr.size + count * REC.size:
             return self._send(400)
         # Device clock -> wall clock: the batch was sent at device time t_send and
         # received at `rx`, so wall = rx - (t_send - ts)/1e6 (error ~ one-way latency).
-        if ver != 3:
+        if ver < 3:
             got = []
             for i in range(count):
                 ts, fid, ch, flags, dlc, _, data = REC.unpack_from(body, hdr.size + i * REC.size)
@@ -459,6 +516,34 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(decoded(cid, at)).encode())
         if u.path == "/api/cars":
             return self._send(200, json.dumps(cars(), indent=1).encode())
+        if u.path == "/api/export":                # a recorded session as a file: format=log (gzip text) or md
+            try:
+                cid = int(q.get("conn", [""])[0])
+            except ValueError:
+                return self._send(400)
+            fmt = q.get("format", ["md"])[0]
+            if fmt == "log":
+                gen = export.log_stream(DB_PATH, cid, CHANNELS)
+                if gen is None:
+                    return self._send(404, b"no such session", "text/plain")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/gzip")
+                self.send_header("Content-Disposition", f'attachment; filename="session-{cid}.log.gz"')
+                self.end_headers()
+                for chunk in gen:
+                    self.wfile.write(chunk)
+                return
+            text = export.summary(DB_PATH, cid, CHANNELS) if fmt == "md" else None
+            if text is None:
+                return self._send(404, b"no such session or format", "text/plain")
+            body = text.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/markdown; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="session-{cid}.md"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if u.path in ("/history", "/history.html", "/decoded.js"):
             name = "decoded.js" if u.path.endswith(".js") else "history.html"
             return self._send(200, open(os.path.join(HERE, name), "rb").read(),
@@ -478,5 +563,6 @@ if __name__ == "__main__":
     ap.add_argument("--db", default=os.path.join(HERE, "canlog.db"))
     a = ap.parse_args()
     db = init_db(a.db)
+    DB_PATH = a.db
     print(f"listening on 0.0.0.0:{a.port}, db={a.db}")
     ThreadingHTTPServer(("0.0.0.0", a.port), H).serve_forever()
