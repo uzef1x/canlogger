@@ -17,6 +17,7 @@ GET  /stats, /frames   raw access
 Run:  python3 server.py [--port 8000] [--db canlog.db]
 """
 import argparse, json, os, re, sqlite3, struct, threading, time
+import decode
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -163,6 +164,34 @@ def _status():
             "channels": [chans[k] for k in sorted(chans)], "ids": ids, "recent": recent}
 
 
+def decoded(cid=None):
+    """Signals from the passive frames of the last WINDOW s and values from polled replies."""
+    with db_lock:
+        now = time.time()
+        if cid is None:
+            if conn["id"] is None or now - conn["last"] > ACTIVE_S:
+                return {"active": False}
+            cid = conn["id"]
+        row = db.execute("SELECT vin FROM connections WHERE id=?", (cid,)).fetchone()
+        vin = row[0] if row else None
+        latest = db.execute(
+            """SELECT board, ch, id, dlc, data, MAX(t) FROM frames
+               WHERE conn=? AND t>? AND flags&4=0 AND flags&1=0 GROUP BY board, ch, id""",
+            (cid, now - WINDOW)).fetchall()
+        replies = db.execute(
+            """SELECT id, data, t FROM frames WHERE conn=? AND board=1 AND ch=1 AND flags&4=0
+               AND id IN (1946, 1979, 1891) ORDER BY t DESC LIMIT 400""", (cid,)).fetchall()[::-1]
+    frames = []
+    for b, c, i, d, x, _ in latest:
+        name = CHANNELS.get(str(b), {}).get("AB"[c], {}).get("name")
+        if name:
+            frames.append((b, name, i, d, bytes(x)))
+    sigs, label, have_dbc = decode.signals(frames, vin)
+    pol = decode.polled(decode.reassemble([(i, bytes(x)) for i, x, _ in replies]))
+    return {"active": True, "vin": vin, "dbc": label, "have_dbc": have_dbc, "signals": sigs,
+            "polled": pol, "polled_age": (now - replies[-1][2]) if replies else None}
+
+
 def cars():
     """Every car (by VIN) with its connections; unidentified connections grouped last."""
     with db_lock:
@@ -277,6 +306,9 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(rows).encode())
         if u.path == "/api/status":
             return self._send(200, json.dumps(status()).encode())
+        if u.path == "/api/decoded":
+            cid = int(q["conn"][0]) if "conn" in q else None
+            return self._send(200, json.dumps(decoded(cid)).encode())
         if u.path == "/api/cars":
             return self._send(200, json.dumps(cars(), indent=1).encode())
         if u.path in ("/", "/index.html"):

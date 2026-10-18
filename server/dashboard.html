@@ -58,6 +58,20 @@
   <h2>Channels</h2>
   <div class="grid" id="chans"></div>
 
+  <div id="valbox" style="display:none">
+    <h2>Values read from the car</h2>
+    <div class="grid" id="vals"></div>
+  </div>
+
+  <section>
+    <details id="sigbox">
+      <summary><b>Decoded signals</b> <span class="sub" id="sigsum"></span></summary>
+      <div style="margin:8px 0"><input type="text" id="sigflt" placeholder="filter by message or signal name"></div>
+      <div class="scroll"><table><thead><tr><th>Channel</th><th>ID</th><th>Signal</th><th>Value</th><th>Unit</th></tr></thead>
+      <tbody id="sigs"></tbody></table></div>
+    </details>
+  </section>
+
   <section>
     <h2>Live IDs, last <span id="win">10</span> s &nbsp;
       <select id="flt"><option value="">all channels</option></select></h2>
@@ -136,6 +150,29 @@ function render(d) {
     : `<tr><td colspan="6" class="empty">No frames yet.</td></tr>`;
 }
 
+function renderDecoded(d) {
+  const pol = d.polled || [];
+  $("valbox").style.display = pol.length ? "" : "none";
+  $("vals").innerHTML = pol.map(v => `<div class="card"><div class="sub">${esc(v.name)}</div>
+    <div class="big">${esc(v.value)} <span class="sub">${esc(v.unit)}</span></div>
+    <div class="sub">${esc(v.src)}</div></div>`).join("");
+  const sg = d.signals || [];
+  $("sigsum").textContent = !d.have_dbc ? "(signal files missing: run server/fetch_dbc.sh)"
+    : `${sg.length} signals · set ${d.dbc}`;
+  if (!$("sigbox").open) return;
+  const f = $("sigflt").value.trim().toLowerCase();
+  const rows = sg.filter(x => !f || (x.msg + " " + x.sig + " " + x.ch).toLowerCase().includes(f)).slice(0, 600);
+  $("sigs").innerHTML = rows.length ? rows.map(x => `<tr><td>${esc(x.ch)}</td><td class="m">${esc(x.id)}</td>
+    <td>${esc(x.sig)}</td><td class="m">${esc(x.text ?? x.value)}${x.text != null ? ` <span class="sub">(${esc(x.value)})</span>` : ""}</td>
+    <td>${esc(x.unit)}</td></tr>`).join("") : `<tr><td colspan="5" class="empty">No decoded signals.</td></tr>`;
+}
+async function tickDecoded() {
+  try {
+    const d = await (await fetch("/api/decoded", {cache: "no-store"})).json();
+    if (d.active) renderDecoded(d);
+  } catch (e) {}
+}
+
 let pageVersion = null;
 async function tick() {
   try {
@@ -152,6 +189,9 @@ async function tick() {
   }
 }
 tick(); setInterval(tick, 1000);
+tickDecoded(); setInterval(tickDecoded, 3000);
+$("sigflt").oninput = tickDecoded;
+$("sigbox").ontoggle = tickDecoded;
 </script>
 </body>
 </html>

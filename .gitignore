@@ -7,3 +7,4 @@ server/__pycache__/
 server/*.db-wal
 server/*.db-shm
 server/*.db-journal
+server/dbc/

@@ -23,6 +23,8 @@ server acks, so a dropped hotspot loses nothing until the ring fills (counted in
 ## Server (Mac)
 `python3 server/server.py` → SQLite `server/canlog.db`; `/stats`, `/frames?board=1&ch=0`.
 `python3 server/simulate.py` posts a fake batch to test without hardware.
+The dashboard decodes signals with the Leaf DBC files of dalathegreat/leaf_can_bus_messages (GPL-3.0):
+run `sh server/fetch_dbc.sh` once to download them (they are git-ignored, not copied into this repo).
 
 ## Known gaps
 - Timestamps are taken at drain time (±1–2 ms) and mapped to wall clock by the server (± network latency).
