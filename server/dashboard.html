@@ -60,7 +60,7 @@
     <div id="vals"></div>
     <div id="cellbox" style="display:none">
       <h2>Battery cell voltages <span class="sub" id="cellsum"></span></h2>
-      <div id="cells" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px"></div>
+      <div class="card"><div id="cells" style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px"></div></div>
     </div>
   </div>
 
@@ -170,24 +170,10 @@ function renderDecoded(d) {
   if (cv.length) {
     const avg = cv.reduce((a, b) => a + b, 0) / cv.length;
     $("cellsum").textContent = `${Math.min(...cv)}–${Math.max(...cv)} mV, average ${Math.round(avg)} mV`;
-    const temp = n => (pol.find(v => v.name === "Pack temperature " + n) || {}).value;
-    // 4 packs of 24 cell pairs each, in cell order. The polling list reports four pack temperatures
-    // but no source maps cells to packs, so this split is an assumption.
-    $("cells").innerHTML = [0, 1, 2, 3].map(k => {
-      const part = d.cells.slice(k * 24, k * 24 + 24);
-      if (!part.length) return "";
-      const ok = part.filter(c => c > 0 && c < 6000);
-      const t = temp(k + 1);
-      const tiles = part.map((c, i) => {
-        const dev = Math.max(-1, Math.min(1, (c - avg) / 20));
-        const col = dev < 0 ? `rgba(220,38,38,${-dev * .6})` : `rgba(37,99,235,${dev * .6})`;
-        return `<div title="cell pair ${k * 24 + i + 1}: ${c} mV" style="background:${col};border:1px solid var(--line);border-radius:3px;font-size:10px;text-align:center;padding:2px 0">${c}</div>`;
-      }).join("");
-      return `<div style="border:1px solid var(--line);border-radius:8px;padding:8px">
-        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px"><b>Pack ${k + 1}</b>
-          <span class="sub">cells ${k * 24 + 1}–${k * 24 + part.length}${t == null ? "" : " · " + t + " °C"}</span></div>
-        <div class="sub" style="margin-bottom:6px">${ok.length ? Math.min(...ok) + "–" + Math.max(...ok) + " mV" : ""}</div>
-        <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:3px">${tiles}</div></div>`;
+    $("cells").innerHTML = (d.cells).map((c, i) => {
+      const dev = Math.max(-1, Math.min(1, (c - avg) / 20));
+      const col = dev < 0 ? `rgba(220,38,38,${-dev * .6})` : `rgba(37,99,235,${dev * .6})`;
+      return `<div title="cell pair ${i + 1}: ${c} mV" style="background:${col};border:1px solid var(--line);border-radius:3px;font-size:10px;text-align:center;padding:2px 0">${c}</div>`;
     }).join("");
   }
   const sg = d.signals || [];
