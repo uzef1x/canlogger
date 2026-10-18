@@ -26,7 +26,7 @@ g = run([(0x7BB, "101F6104020D1302"), (0x7BB, "210314FFFFFF020B"), (0x7BB, "2213
 check(g, "Pack temperature 1", 19.2)
 g = run([(0x7BB, "101A610614555551"), (0x7BB, "215055412B565415"), (0x7BB, "2251FFFFFFFFFFFF"),
          (0x7BB, "23FFFFFFFFFFFFFF")])
-check(g, "Balancing cells", 38)
+check(g, "Shunt bits set (balancing)", 38)
 g = run([(0x7BB, "1016618432333055"), (0x7BB, "214B313139324530"), (0x7BB, "2230303134383220"),
          (0x7BB, "23A0000000000000")])
 check(g, "Battery serial", "230UK1192E0001482")

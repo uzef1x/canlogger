@@ -227,7 +227,7 @@ def _group6(p):
         bits[i * 2] = p[2 + i] & 0xF
         bits[i * 2 + 1] = p[2 + i] >> 4
     active = [i + 1 for i in range(96) if int("8421"[i % 4]) & bits[i >> 2]]
-    return [("Balancing cells", len(active), "", "Battery")]
+    return [("Shunt bits set (balancing)", len(active), "", "Battery")]
 
 
 def _group61(p):                       # Hx / SOH / capacity: offsets from Battery-Emulator (ZE1)
@@ -244,7 +244,9 @@ def _group61(p):                       # Hx / SOH / capacity: offsets from Batte
 
 def _group84(p):
     txt = "".join(chr(c) for c in p[2:] if 32 <= c < 127).strip()
-    return [("Battery serial", txt, "", "Battery")] if txt else []
+    if not txt.strip("*"):                # this car answers with a masked serial (all asterisks)
+        return []
+    return [("Battery serial", txt, "", "Battery")]
 
 
 def _meter(p):
