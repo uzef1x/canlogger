@@ -101,7 +101,7 @@ const clock = t => new Date(t * 1000).toLocaleTimeString([], {hour12: false});
 const dur = s => s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.round(s % 3600 / 60)} min` : s >= 60 ? `${Math.round(s / 60)} min` : `${Math.round(s)} s`;
 let cars = [], ses = null, timer = null;
 
-async function loadCars() {
+async function loadCars(keepVin) {
   cars = (await (await fetch("/api/cars", {cache: "no-store"})).json())
     .map(c => ({...c, connections: c.connections.filter(x => x.frames > 0)}))
     .filter(c => c.connections.length)
@@ -110,6 +110,8 @@ async function loadCars() {
     `<option value="${i}">${esc(c.vin || "VIN unknown")} (${c.connections.length} ${c.connections.length === 1 ? "session" : "sessions"})</option>`).join("");
   $("none").style.display = cars.length ? "none" : "";
   $("scrollbox").style.display = $("live").style.display = "none";
+  const i = cars.findIndex(c => c.vin === keepVin);
+  if (keepVin !== undefined && i >= 0) $("hvin").value = i;
   if (cars.length) fillSessions();
 }
 
@@ -166,7 +168,7 @@ $("hdel").onclick = async () => {
   const r = await fetch(`/api/delete?conn=${ses.id}`, {method: "POST"});
   if (!r.ok) { alert("Not deleted: " + await r.text()); return; }
   ses = null;
-  loadCars();
+  loadCars(c.vin);
 };
 $("hscr").oninput = () => moved(false);
 const nudge = s => { const r = $("hscr"); r.value = Math.max(+r.min, Math.min(+r.max, +r.value + s)); moved(false); };
