@@ -53,7 +53,7 @@
   <div class="grid" id="car"></div>
 
   <h2>Boards</h2>
-  <div class="grid" id="boards" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr))"></div>
+  <div id="boards"></div>
 
   <div id="valbox" style="display:none">
     <h2>Values read from the car</h2>
@@ -118,24 +118,23 @@ function renderCar(c) {
 function render(d) {
   $("win").textContent = d.window;
   renderCar(d.car);
-  const chanCard = c => {
-    const cls = c.last_age == null ? "" : c.last_age < 5 ? "ok" : c.last_age < 30 ? "warn" : "bad";
-    return `<div class="card ${cls}" style="padding:8px"><div class="t" style="white-space:nowrap"><span><span class="dot"></span>${esc(c.name || "?")}</span></div>
-      <div class="sub">port ${c.ch} · ${c.fd ? "FD-capable" : "classic"}</div>
-      <div class="big" style="font-size:20px">${c.rate.toFixed(1)} <span class="sub">fps</span></div>
-      <div class="sub">${c.total.toLocaleString()} total · ${fmtAge(c.last_age)}</div></div>`;
-  };
+  const dotCls = age => age == null ? "" : age < 5 ? "ok" : age < 30 ? "warn" : "bad";
   $("boards").innerHTML = d.boards.length ? d.boards.map(b => {
     const idle = b.last_rx_age == null;
-    const cls = idle ? "warn" : b.last_rx_age < 5 ? "ok" : b.last_rx_age < 30 ? "warn" : "bad";
-    const chans = d.channels.filter(c => c.board === b.board);
-    return `<div class="card ${cls}"><div class="t"><span><span class="dot"></span>Board ${b.board}</span>
-      ${b.boot_id == null ? "" : `<span class="badge">boot ${b.boot_id.toString(16)}</span>`}</div>
-      <div class="sub">${b.ssid ? esc(b.ssid) : "network unknown"} &nbsp;${rssiBars(b.rssi)}</div>
-      <div class="sub">${idle ? "online, no CAN traffic" : "last upload " + fmtAge(b.last_rx_age)}</div>
-      ${b.dropped > 0 ? `<div class="sub" style="color:var(--bad)">dropped ${b.dropped.toLocaleString()} frames</div>` : ""}
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-top:10px">
-        ${chans.map(chanCard).join("")}</div></div>`;
+    const cls = idle ? "warn" : dotCls(b.last_rx_age);
+    const rows = d.channels.filter(c => c.board === b.board).map(c => `<tr class="${dotCls(c.last_age)}">
+      <td><span class="dot"></span>${esc(c.name || "?")}</td><td>${c.ch}</td><td>${c.fd ? "CAN FD capable" : "classic CAN"}</td>
+      <td style="text-align:right">${c.rate.toFixed(1)} fps</td><td style="text-align:right">${c.total.toLocaleString()}</td>
+      <td>${fmtAge(c.last_age)}</td></tr>`).join("");
+    return `<section style="margin-bottom:12px"><div class="t ${cls}" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+        <b><span class="dot"></span>Board ${b.board}</b>
+        <span class="sub">${b.ssid ? esc(b.ssid) : "network unknown"} &nbsp;${rssiBars(b.rssi)}</span>
+        <span class="sub">${idle ? "online, no CAN traffic" : "last upload " + fmtAge(b.last_rx_age)}</span>
+        ${b.boot_id == null ? "" : `<span class="badge">boot ${b.boot_id.toString(16)}</span>`}
+        ${b.dropped > 0 ? `<span class="sub" style="color:var(--bad)">dropped ${b.dropped.toLocaleString()} frames</span>` : ""}</div>
+      <div class="scroll" style="max-height:none;margin-top:6px"><table><thead><tr><th>Channel</th><th>Port</th><th>Type</th>
+        <th style="text-align:right">Rate</th><th style="text-align:right">Frames</th><th>Last frame</th></tr></thead>
+        <tbody>${rows}</tbody></table></div></section>`;
   }).join("") : `<div class="empty">No board has uploaded yet.</div>`;
 
   const opts = d.channels.map(c => `${c.board}${c.ch}`);
