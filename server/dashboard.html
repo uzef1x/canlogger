@@ -59,7 +59,7 @@
     <h2>Values read from the car</h2>
     <div id="vals"></div>
     <div id="cellbox" style="display:none">
-      <h2>Battery cell voltages <span class="sub" id="cellsum"></span></h2>
+      <h2>Battery cell voltages</h2>
       <div id="cells"></div>
     </div>
   </div>
@@ -170,7 +170,7 @@ function renderDecoded(d) {
   if (cv.length) {
     const avg = cv.reduce((a, b) => a + b, 0) / cv.length;
     const spread = Math.max(...cv) - Math.min(...cv);
-    $("cellsum").textContent = `${Math.min(...cv)}–${Math.max(...cv)} mV, average ${Math.round(avg)} mV`;
+    const range = `${Math.min(...cv)}–${Math.max(...cv)} mV, average ${Math.round(avg)} mV`;
     // Limits: spread up to 30 mV is good (the Autel report's voltage delta threshold), over 100 mV is
     // bad (forum rule of thumb), in between is a warning. A single cell is judged against the average:
     // within 15 mV good, up to 50 mV warning, beyond that bad (these two are our own numbers).
@@ -200,7 +200,7 @@ function renderDecoded(d) {
         <td class="m"><b>${sum.toFixed(2)} V</b></td>${tiles}</tr>`);
     }
     $("cells").innerHTML = `<div class="card ${vk}" style="margin-bottom:8px"><span class="dot"></span><b>Cell spread ${spread} mV: ${verdict}</b>
-      <span class="sub"> · ${note}</span></div>
+      <span class="sub"> · ${range} · ${note}</span></div>
       <div class="card"><div class="scroll" style="max-height:none"><table><thead><tr>
       <th>Module</th><th>Voltage</th><th>Cell 1</th><th>Cell 2</th><th>Cell 3</th><th>Cell 4</th></tr></thead>
       <tbody>${rows.join("")}</tbody></table></div></div>`;
