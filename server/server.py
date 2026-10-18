@@ -131,9 +131,12 @@ def _status():
             (start_t - 1,)):
         boards[b] = {"board": b, "last_rx_age": now - rx, "boot_id": boot, "dropped": dropped,
                      "rssi": rssi, "ssid": None}
-    for b, ssid in db.execute("SELECT board, ssid FROM devices"):
+    for b, ssid, hello_t in db.execute("SELECT board, ssid, hello_t FROM devices"):
         if b in boards:
             boards[b]["ssid"] = ssid or None
+        elif now - hello_t <= 90:      # hello every 60 s: connected, but nothing to upload (no CAN traffic)
+            boards[b] = {"board": b, "last_rx_age": None, "boot_id": None, "dropped": 0,
+                         "rssi": None, "ssid": ssid or None}
     chans = {}
     for b, brd in CHANNELS.items():
         if int(b) not in boards:

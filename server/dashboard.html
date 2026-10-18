@@ -122,11 +122,12 @@ function render(d) {
   $("win").textContent = d.window;
   renderCar(d.car);
   $("boards").innerHTML = d.boards.length ? d.boards.map(b => {
-    const cls = b.last_rx_age < 5 ? "ok" : b.last_rx_age < 30 ? "warn" : "bad";
+    const idle = b.last_rx_age == null;
+    const cls = idle ? "warn" : b.last_rx_age < 5 ? "ok" : b.last_rx_age < 30 ? "warn" : "bad";
     return `<div class="card ${cls}"><div class="t"><span><span class="dot"></span>Board ${b.board}</span>
-      <span class="badge">boot ${b.boot_id.toString(16)}</span></div>
+      ${b.boot_id == null ? "" : `<span class="badge">boot ${b.boot_id.toString(16)}</span>`}</div>
       <div class="sub">${b.ssid ? esc(b.ssid) : "network unknown"} &nbsp;${rssiBars(b.rssi)}</div>
-      <div class="sub">last upload ${fmtAge(b.last_rx_age)}</div>
+      <div class="sub">${idle ? "online, no CAN traffic" : "last upload " + fmtAge(b.last_rx_age)}</div>
       ${b.dropped > 0 ? `<div class="sub" style="color:var(--bad)">dropped ${b.dropped.toLocaleString()} frames</div>` : ""}</div>`;
   }).join("") : `<div class="empty">No board has uploaded yet.</div>`;
 
