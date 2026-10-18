@@ -219,7 +219,7 @@ function renderDecoded(d) {
     const hist = (d.history || []).map(e => `<tr><td>M${e.module}</td>
       <td class="m"><b>${sg(e.peak)}</b> <span class="sub">cell ${e.cell} at ${tm(e.t)}</span></td>
       <td class="m">${sg(e.min)}</td><td class="m">${sg(e.max)}</td><td class="m">${tm(e.first)}</td></tr>`).join("");
-    $("cells").innerHTML += `<div class="card" style="margin-top:8px"><div class="scroll" style="max-height:200px"><table><thead><tr>
+    $("cells").innerHTML += `<div class="card" style="margin-top:8px"><div class="scroll" style="max-height:none"><table><thead><tr>
       <th>Out of balance</th><th>Peak from average</th><th>Lowest</th><th>Highest</th><th>First out</th></tr></thead>
       <tbody>${hist || `<tr><td colspan="5" class="empty">No module out of balance in this session.</td></tr>`}</tbody></table></div></div>`;
   }

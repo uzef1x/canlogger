@@ -14,6 +14,9 @@
 
 static uint32_t g_count[2] = {0, 0};
 
+// The channel used for the active VIN read / polling (see can_bus.cpp)
+static constexpr uint8_t ACT_CH = LOGGER_BOARD_ID == 2 ? CH_A : CH_B;
+
 static void capture_task(void *) {
   LogRecord r;
   uint32_t rate_ms = 0, rate_last = 0;
@@ -22,12 +25,10 @@ static void capture_task(void *) {
     // gets the active probe instead; a bus that was ever alive never does.
     if (millis() - rate_ms >= 1000) {
       rate_ms = millis();
-      const bool alive = g_count[CH_B] - rate_last >= 20;
+      const bool alive = g_count[ACT_CH] - rate_last >= 20;
       canbus_vin_auto(alive);
-#if LOGGER_BOARD_ID == 1
-      canbus_active_auto(alive);   // only board 1's port B is wired to the OBD port
-#endif
-      rate_last = g_count[CH_B];
+      canbus_active_auto(alive);   // board 1: port B (OBD 6/14); board 2: port A (AV-CAN)
+      rate_last = g_count[ACT_CH];
     }
     canbus_poll();
     canbus_vin_tick();
@@ -38,7 +39,7 @@ static void capture_task(void *) {
         // timestamping (MCP2518FD TBC) is the upgrade if ordering matters.
         r.ts_us = (uint64_t)esp_timer_get_time();
         ring_push(r);
-        if (ch == CH_B) canbus_vin_feed(r);
+        if (ch == ACT_CH) canbus_vin_feed(r);
         g_count[ch]++;
         any = true;
       }

@@ -6,6 +6,14 @@
 #include <Preferences.h>
 #include "driver/twai.h"
 
+// The channel the active VIN read / polling talks on: board 1 uses port B (TWAI, wired to the
+// OBD port 6/14), board 2 uses port A (MCP2518FD, wired to AV-CAN).
+#if LOGGER_BOARD_ID == 2
+static constexpr uint8_t ACT_CH = CH_A;
+#else
+static constexpr uint8_t ACT_CH = CH_B;
+#endif
+
 static ACAN2517FD gCanA(MCP2518_CS_GPIO, SPI, MCP2518_INT_GPIO);
 static Preferences prefs;
 
@@ -34,11 +42,11 @@ static unsigned osc_mhz(ACAN2517FDSettings::Oscillator o) {
   return o == ACAN2517FDSettings::OSC_40MHz ? 40 : 20;
 }
 
-static bool beginA(ACAN2517FDSettings::Oscillator osc) {
+static bool beginA(ACAN2517FDSettings::Oscillator osc, bool normal = false) {
   if (g_begun) gCanA.end();   // begin() leaks a task + heap per call otherwise
   g_begun = true;
   ACAN2517FDSettings s(osc, CAN_BITRATE, DataBitRateFactor::x1);
-  s.mRequestedMode = ACAN2517FDSettings::ListenOnly;
+  s.mRequestedMode = normal ? ACAN2517FDSettings::Normal20B : ACAN2517FDSettings::ListenOnly;
   s.mDriverReceiveFIFOSize = 128;   // headroom for the capture task's poll period
   return gCanA.begin(s, [] { gCanA.isr(); }) == 0;
 }
@@ -182,6 +190,10 @@ static void act_tick(uint32_t now);
 static bool act_busy();
 
 static void vin_set_mode(twai_mode_t m) {
+  if (ACT_CH == CH_A) {               // port A: restart the MCP2518FD in classic normal / listen-only
+    if (!g_detecting) beginA(g_osc, m == TWAI_MODE_NORMAL);
+    return;
+  }
   twai_stop();
   twai_driver_uninstall();
   beginBusB(m);
@@ -202,9 +214,18 @@ static bool vin_tx(uint32_t id, const uint8_t *d) {
   if ((uint8_t)(g_txlog_w - g_txlog_r) < 16) {
     LogRecord &l = g_txlog[g_txlog_w & 15];
     l = {};
-    l.id = id; l.ch = CH_B; l.flags = FLAG_TX; l.dlc = 8;
+    l.id = id; l.ch = ACT_CH; l.flags = FLAG_TX; l.dlc = 8;
     memcpy(l.data, d, 8);
     g_txlog_w++;
+  }
+  if (ACT_CH == CH_A) {               // the MCP2518FD retransmits until the frame wins arbitration
+    CANFDMessage f;
+    f.id = id;
+    f.ext = false;
+    f.type = CANFDMessage::CAN_DATA;
+    f.len = 8;
+    memcpy(f.data, d, 8);
+    return gCanA.tryToSend(f);
   }
   twai_message_t m = {};
   m.identifier = id;
@@ -487,10 +508,11 @@ static uint8_t act_find(uint8_t i) {
 void canbus_active_auto(bool bus_alive) {
   if (bus_alive) { g_seen_alive = true; return; }
   if (g_seen_alive || g_act != A_OFF || g_vin_state != V_IDLE || g_vin_req) return;
+  if (ACT_CH == CH_A && g_detecting) return;   // the controller is still finding its oscillator
   const uint32_t now = millis();
   if (g_act_probes >= ACT_MAX_PROBES || (int32_t)(now - g_act_probe_at) < 0) return;
   g_act_probes++;
-  Serial.printf("[act] CAR-CAN silent, probing (%u/%u)\n", g_act_probes, ACT_MAX_PROBES);
+  Serial.printf("[act] bus silent, probing (%u/%u)\n", g_act_probes, ACT_MAX_PROBES);
   vin_set_mode(TWAI_MODE_NORMAL);
   g_act_idx = 0;
   g_act_cycle = 0;
