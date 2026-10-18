@@ -211,7 +211,7 @@ function renderDecoded(d) {
         <td class="m"><b>${sum.toFixed(2)} V</b></td>${tiles}</tr>`);
     }
     $("cells").innerHTML = `<div class="card ${vk}" style="margin-bottom:8px"><span class="dot"></span><b>Cell spread ${spread} mV: ${verdict}</b>
-      <span class="sub"> · ${range} · ${note}</span></div>
+      <div class="sub">${range}</div><div class="sub">* ${note}</div></div>
       <div class="card"><div class="scroll" style="max-height:none"><table><thead><tr>
       <th>Module</th><th>Voltage</th><th>Cell 1</th><th>Cell 2</th><th>Cell 3</th><th>Cell 4</th></tr></thead>
       <tbody>${rows.join("")}</tbody></table></div></div>`;
