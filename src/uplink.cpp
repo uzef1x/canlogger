@@ -1,6 +1,7 @@
 #include "uplink.h"
 #include "config.h"
 #include "ring.h"
+#include "log_codec.h"
 #include "can_bus.h"
 #include "log_format.h"
 #include <Arduino.h>
@@ -14,7 +15,9 @@
 
 static uint32_t g_boot_id;
 static volatile uint32_t g_sent = 0;
-static uint8_t *g_body = nullptr;
+static uint8_t *g_body = nullptr;   // LogHeader + encoded batch
+static LogRecord *g_recs = nullptr;  // batch as peeked from the ring
+static uint8_t *g_prev = nullptr;    // encoder scratch
 
 // Two server addresses: the logger stays on one until two requests in a row fail, then tries the other.
 static uint8_t g_url_idx = 0, g_url_fails = 0;
@@ -99,6 +102,7 @@ static void send_hello() {
 
 static void uplink_task(void *) {
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);   // modem sleep holds incoming TCP ACKs until the next beacon: slow uploads
   WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   uint32_t backoff = 500;
@@ -123,8 +127,8 @@ static void uplink_task(void *) {
       vTaskDelay(pdMS_TO_TICKS(200));
       continue;
     }
-    LogRecord *recs = (LogRecord *)(g_body + sizeof(LogHeader));
-    const uint32_t n = ring_peek(recs, BATCH_RECORDS);
+    const uint32_t n = ring_peek(g_recs, BATCH_RECORDS);
+    const size_t enc = log_encode(g_recs, n, g_body + sizeof(LogHeader), g_prev);
 
     LogHeader h;
     h.magic = LOG_MAGIC;
@@ -141,15 +145,19 @@ static void uplink_task(void *) {
     HTTPClient http;
     http.setReuse(true);
     http.setConnectTimeout(3000);
-    http.setTimeout(5000);
+    http.setTimeout(20000);   // a timed-out reply makes the board resend a batch the server may already have stored
     int code = -1;
+    const bool was_open = g_tls.connected();
+    const uint32_t t0 = millis();
     if (begin_request(http, server_url())) {
       http.addHeader("Content-Type", "application/octet-stream");
-      code = http.POST(g_body, sizeof(LogHeader) + n * sizeof(LogRecord));
+      code = http.POST(g_body, sizeof(LogHeader) + enc);
       server_result(code == 200);
       if (code == 200) canbus_set_fast_cells(http.getString().indexOf("fast") >= 0);
       http.end();
     }
+    Serial.printf("[uplink] n=%lu %lu bytes code=%d %lu ms reused=%d\n", (unsigned long)n,
+                  (unsigned long)enc, code, (unsigned long)(millis() - t0), (int)was_open);
     if (code == 200) {
       ring_commit(n);
       g_sent += n;
@@ -165,6 +173,8 @@ static void uplink_task(void *) {
 
 void uplink_start() {
   g_boot_id = esp_random();
-  g_body = (uint8_t *)ps_malloc(sizeof(LogHeader) + BATCH_RECORDS * sizeof(LogRecord));
+  g_body = (uint8_t *)ps_malloc(sizeof(LogHeader) + BATCH_RECORDS * CODEC_MAX_PER_RECORD);
+  g_recs = (LogRecord *)ps_malloc(BATCH_RECORDS * sizeof(LogRecord));
+  g_prev = (uint8_t *)ps_malloc(CODEC_PREV_BYTES);
   xTaskCreatePinnedToCore(uplink_task, "uplink", 8192, nullptr, 1, nullptr, 0);
 }

@@ -1,6 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Wire format shared with server/server.py. Little-endian, packed.
-//   POST /ingest body = LogHeader followed by `count` LogRecords.
+//   POST /ingest body = LogHeader followed by `count` LogRecords (v1, v2) or by the
+//   log_codec.h encoding of `count` records (v3).
 // Timestamps are device monotonic microseconds (esp_timer). The server converts
 // them to wall-clock time using t_send_us (the device clock at the moment the
 // batch was sent) against its own receive time, so no clock sync is needed on
@@ -10,7 +11,7 @@
 #include <stdint.h>
 
 #define LOG_MAGIC   0x31474C43u   // "CLG1"
-#define LOG_VERSION 2   // v2 adds rssi (the server still accepts v1)
+#define LOG_VERSION 3   // v2 adds rssi; v3 sends the records compacted (log_codec.h). The server still accepts v1 and v2
 
 enum : uint8_t { CH_A = 0, CH_B = 1 };            // CH_A = MCP2518FD, CH_B = TWAI
 enum : uint8_t { FLAG_EXT = 1, FLAG_RTR = 2, FLAG_TX = 4 };   // FLAG_TX: sent by this logger, not heard on the bus

@@ -25,6 +25,51 @@ HDR = struct.Struct("<IBBHIQI")       # v1: magic, board, ver, count, boot_id, t
 HDR2 = struct.Struct("<IBBHIQIb3x")   # v2: v1 + rssi (dBm) + 3 pad
 REC = struct.Struct("<QIBBBB8s")      # ts_us, id, ch, flags, dlc, reserved, data
 MAGIC = 0x31474C43
+
+
+def decode_v3(buf, off, count):
+    """Inverse of log_encode() in src/log_codec.h. Returns [(ts_us, id, ch, flags, dlc, data)]
+    or None if the body is not exactly `count` well-formed records."""
+    prev = {}
+    out = []
+    last = 0
+    n = len(buf)
+
+    def varint(i):
+        v = shift = 0
+        while True:
+            if i >= n or shift > 63:
+                raise ValueError
+            b = buf[i]; i += 1
+            v |= (b & 0x7F) << shift
+            if not b & 0x80:
+                return v, i
+            shift += 7
+    try:
+        for _ in range(count):
+            z, off = varint(off)
+            last = (last + ((z >> 1) ^ -(z & 1))) & 0xFFFFFFFFFFFFFFFF
+            tag = buf[off]; off += 1
+            ch, flags, dlc = tag & 1, (tag >> 1) & 7, tag >> 4
+            if dlc > 8:
+                return None
+            cid, off = varint(off)
+            mask = buf[off]; off += 1
+            key = (ch, cid) if not flags & 1 and cid < 2048 else None
+            cur = bytearray(prev.get(key, bytes(8))) if key else bytearray(8)
+            for k in range(dlc):
+                if mask >> k & 1:
+                    cur[k] ^= buf[off]; off += 1
+            for k in range(dlc, 8):
+                cur[k] = 0
+            if mask >> dlc:
+                return None
+            if key:
+                prev[key] = bytes(cur)
+            out.append((last, cid, ch, flags, dlc, bytes(cur[:dlc])))
+    except (ValueError, IndexError):
+        return None
+    return out if off == n else None
 HERE = os.path.dirname(os.path.abspath(__file__))
 CHANNELS = json.load(open(os.path.join(HERE, "channels.json")))
 VIN_RE = re.compile(r"^[0-9A-Z]{17}$")
@@ -349,20 +394,29 @@ class H(BaseHTTPRequestHandler):
         if len(body) < HDR.size:
             return self._send(400)
         ver = body[5]
-        hdr = HDR2 if ver == 2 else HDR
-        if ver not in (1, 2) or len(body) < hdr.size:
+        hdr = HDR2 if ver >= 2 else HDR
+        if ver not in (1, 2, 3) or len(body) < hdr.size:
             return self._send(400)
         vals = hdr.unpack_from(body)
         magic, board, _, count, boot_id, t_send, dropped = vals[:7]
-        rssi = vals[7] if ver == 2 else None
-        if magic != MAGIC or len(body) != hdr.size + count * REC.size:
+        rssi = vals[7] if ver >= 2 else None
+        if magic != MAGIC:
+            return self._send(400)
+        if ver == 3:
+            got = decode_v3(body, hdr.size, count)
+            if got is None:
+                return self._send(400)
+        elif len(body) != hdr.size + count * REC.size:
             return self._send(400)
         # Device clock -> wall clock: the batch was sent at device time t_send and
         # received at `rx`, so wall = rx - (t_send - ts)/1e6 (error ~ one-way latency).
-        recs = []
-        for i in range(count):
-            ts, fid, ch, flags, dlc, _, data = REC.unpack_from(body, hdr.size + i * REC.size)
-            recs.append((rx - (t_send - ts) / 1e6, board, boot_id, ch, fid, flags, dlc, data[:dlc]))
+        if ver != 3:
+            got = []
+            for i in range(count):
+                ts, fid, ch, flags, dlc, _, data = REC.unpack_from(body, hdr.size + i * REC.size)
+                got.append((ts, fid, ch, flags, dlc, data[:dlc]))
+        recs = [(rx - (t_send - ts) / 1e6, board, boot_id, ch, fid, flags, dlc, data)
+                for ts, fid, ch, flags, dlc, data in got]
         with db_lock:
             cid = touch_conn(rx, board, boot_id)
             db.executemany("""INSERT INTO frames(t,board,boot_id,ch,id,flags,dlc,data,conn)

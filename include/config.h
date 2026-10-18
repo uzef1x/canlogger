@@ -41,7 +41,9 @@
 #define RING_RECORDS 131072
 #endif
 
-// Records per HTTP POST.
+// Maximum records per HTTP POST. A batch holds whatever arrived during the previous request, up
+// to this cap. Every request costs a TLS handshake, so small batches cannot keep up with a ZE0
+// bus (~2,400 frames/s): at 400 per request the ring buffer overflowed.
 #ifndef BATCH_RECORDS
-#define BATCH_RECORDS 400
+#define BATCH_RECORDS 20000
 #endif
