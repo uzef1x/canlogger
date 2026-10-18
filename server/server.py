@@ -34,6 +34,7 @@ ACTIVE_S = 15.0    # no upload for this long = the car is disconnected (dashboar
 
 db = None
 db_lock = threading.Lock()   # one shared sqlite connection: serialise every use
+polled_states = {}      # connection id -> decode.Polled (incremental reassembly of polled replies)
 conn = {"id": None, "last": 0.0, "boots": set(), "boards": {}}   # the current/most recent connection
 
 
@@ -149,6 +150,8 @@ def _status():
             "SELECT board, ch, COUNT(*) FROM frames WHERE conn=? AND t>? GROUP BY board, ch", (cid, since)):
         if (b, c) in chans:
             chans[(b, c)]["rate"] = n / WINDOW
+    if vin and "ZE1" in vin and (1, 1) in chans:    # the ZE1's OBD port only carries the diagnostic CAN
+        chans[(1, 1)]["name"] = "Diagnostic CAN (OBD 6/14)"
     ids = [{"board": b, "ch": "AB"[c], "id": f"0x{i:03X}", "rate": n / WINDOW,
             "dlc": d, "data": bytes(x).hex(" ")}
            for b, c, i, n, d, x in db.execute(
@@ -178,21 +181,23 @@ def decoded(cid=None):
             """SELECT board, ch, id, dlc, data, MAX(t) FROM frames
                WHERE conn=? AND t>? AND flags&4=0 AND flags&1=0 GROUP BY board, ch, id""",
             (cid, now - WINDOW)).fetchall()
-        replies = []
-        for rid in (1946, 1979, 1891):        # 0x79A, 0x7BB, 0x763: last frames of each reply id
-            replies += db.execute(
-                """SELECT id, data, t FROM frames WHERE conn=? AND board=1 AND ch=1 AND flags&4=0
-                   AND id=? ORDER BY t DESC LIMIT 60""", (cid, rid)).fetchall()
-        replies.sort(key=lambda r: r[2])
+        ps = polled_states.setdefault(cid, decode.Polled())
+        marks = ",".join(str(i) for i in decode.REPLY_IDS)
+        ps.feed([(r, i, x, t) for r, i, x, t in db.execute(
+            f"""SELECT rowid, id, data, t FROM frames WHERE conn=? AND board=1 AND ch=1 AND flags&4=0
+                AND id IN ({marks}) AND rowid>? ORDER BY rowid""", (cid, ps.last_rowid))])
     frames = []
     for b, c, i, d, x, _ in latest:
         name = CHANNELS.get(str(b), {}).get("AB"[c], {}).get("name")
         if name:
             frames.append((b, name, i, d, bytes(x)))
     sigs, label, have_dbc = decode.signals(frames, vin)
-    pol = decode.polled(decode.reassemble([(i, bytes(x)) for i, x, _ in replies]))
+    pol = decode.polled(ps)
+    for v in pol:
+        v["age"] = round(now - v.pop("t"), 1)
+    cells = ps.msgs.get((0x7BB, 0x61, 0x02))
     return {"active": True, "vin": vin, "dbc": label, "have_dbc": have_dbc, "signals": sigs,
-            "polled": pol, "polled_age": (now - replies[-1][2]) if replies else None}
+            "polled": pol, "cells": decode.cell_voltages(cells[0]) if cells else []}
 
 
 def cars():

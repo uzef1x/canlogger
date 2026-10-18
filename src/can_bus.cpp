@@ -389,17 +389,65 @@ bool canbus_vin_take(char out[18], bool &ok, char note[48]) {
 }
 
 // ── ZE1 active mode ──────────────────────────────────────────────────────────
+// Read-only requests (services 0x21 and 0x22) taken from the "Nissan Leaf 2018" polling list of
+// dalathegreat/leaf_can_bus_messages. The first N_PROBE entries are the probe; the rest are
+// only polled once the car has answered. every = poll every Nth cycle; 0 = until answered once.
 enum ActState : uint8_t { A_OFF, A_SETTLE, A_IDLE, A_WAIT, A_CF };
-struct PollReq { uint32_t req_id, rsp_id; uint8_t req[8]; };
+struct PollReq { uint32_t req_id, rsp_id; uint8_t req[8]; uint8_t every; };
+#define SF22(id, rsp, hi, lo, n) {id, rsp, {0x03, 0x22, hi, lo, 0, 0, 0, 0}, n}
+#define SV21(id, rsp, g, n)      {id, rsp, {0x02, 0x21, g, 0, 0, 0, 0, 0}, n}
 static const PollReq POLLS[] = {
-  {0x797, 0x79A, {0x02, 0x21, 0x81, 0, 0, 0, 0, 0}},         // VIN
-  {0x79B, 0x7BB, {0x02, 0x21, 0x01, 0, 0, 0, 0, 0}},         // battery group 1
-  {0x743, 0x763, {0x03, 0x22, 0x0E, 0x01, 0, 0, 0, 0}},      // odometer
+  // probe
+  SV21(0x797, 0x79A, 0x81, 0),                       // VIN
+  SV21(0x79B, 0x7BB, 0x01, 1),                       // LBC group 1: SoC, voltage, current ...
+  SF22(0x743, 0x763, 0x0E, 0x01, 10),                // odometer
+  // LBC
+  SV21(0x79B, 0x7BB, 0x02, 3),                       // cell voltages
+  SV21(0x79B, 0x7BB, 0x04, 3),                       // pack temperatures
+  SV21(0x79B, 0x7BB, 0x06, 3),                       // balancing shunts
+  SV21(0x79B, 0x7BB, 0x61, 30),                      // health block: Hx, SOH, capacity
+  SV21(0x79B, 0x7BB, 0x84, 0),                       // battery serial
+  // VCM
+  SF22(0x797, 0x79A, 0x13, 0x04, 1),                 // power switch
+  SF22(0x797, 0x79A, 0x11, 0x56, 1),                 // gear
+  SF22(0x797, 0x79A, 0x11, 0x03, 1),                 // 12 V voltage
+  SF22(0x797, 0x79A, 0x11, 0x83, 1),                 // 12 V current
+  SF22(0x797, 0x79A, 0x12, 0x03, 30),                // quick charge count
+  SF22(0x797, 0x79A, 0x12, 0x05, 30),                // L1/L2 charge count
+  SF22(0x797, 0x79A, 0x11, 0x5D, 10),                // ambient temperature
+  SF22(0x797, 0x79A, 0x12, 0x61, 1),                 // A/C power estimate
+  SF22(0x797, 0x79A, 0x12, 0x62, 1),                 // heater power estimate
+  SF22(0x797, 0x79A, 0x11, 0x52, 1),                 // auxiliary power
+  SF22(0x797, 0x79A, 0x11, 0x51, 1),                 // A/C power
+  SF22(0x797, 0x79A, 0x12, 0x34, 1),                 // plug state
+  SF22(0x797, 0x79A, 0x11, 0x4E, 1),                 // charge mode
+  SF22(0x797, 0x79A, 0x12, 0x55, 1),                 // motor rpm
+  SF22(0x797, 0x79A, 0x12, 0x36, 1),                 // on-board charger output power
+  SF22(0x797, 0x79A, 0x11, 0x46, 1),                 // motor power
+  SF22(0x797, 0x79A, 0x12, 0x1A, 1),                 // speed
+  SF22(0x797, 0x79A, 0x11, 0x06, 1),                 // A/C on
+  SF22(0x797, 0x79A, 0x11, 0x0F, 1),                 // rear heater
+  SF22(0x797, 0x79A, 0x13, 0x18, 1),                 // eco mode
+  SF22(0x797, 0x79A, 0x13, 0x1A, 1),                 // e-pedal
+  // body
+  SF22(0x743, 0x763, 0x0E, 0x25, 10),                // tyre pressure FR
+  SF22(0x743, 0x763, 0x0E, 0x26, 10),                // FL
+  SF22(0x743, 0x763, 0x0E, 0x27, 10),                // RR
+  SF22(0x743, 0x763, 0x0E, 0x28, 10),                // RL
+  SF22(0x740, 0x760, 0x12, 0x08, 1),                 // steering wheel angle
+  SF22(0x740, 0x760, 0x12, 0x09, 1),                 // brake pedal
+  SF22(0x740, 0x760, 0x11, 0x15, 1),                 // accelerator pedal
+  SF22(0x784, 0x78C, 0x12, 0x25, 1),                 // motor torque
+  SF22(0x784, 0x78C, 0x11, 0x21, 1),                 // motor temperature
+  SV21(0x745, 0x765, 0x09, 1),                       // meter: wipers, lights, indicators
+  SV21(0x744, 0x764, 0x10, 3),                       // climate control
 };
 static constexpr uint8_t N_POLLS = sizeof(POLLS) / sizeof(POLLS[0]);
+static constexpr uint8_t N_PROBE = 3;
 static constexpr uint32_t ACT_START_MS = 15000;   // earliest first probe after power-on
 static constexpr uint32_t ACT_RETRY_MS = 60000;   // between failed probes
-static constexpr uint32_t ACT_CYCLE_MS = 10000;   // between polling cycles once confirmed
+static constexpr uint32_t ACT_CYCLE_MS = 2000;    // pause between polling cycles once confirmed
+static constexpr uint32_t ACT_GAP_MS   = 120;     // between two requests
 static constexpr uint8_t  ACT_MAX_PROBES = 5;
 
 static ActState g_act = A_OFF;
@@ -410,11 +458,30 @@ static bool     g_act_cycle_ok = false, g_act_confirmed = false, g_seen_alive = 
 static uint8_t  g_act_buf[40];
 static uint16_t g_act_len = 0, g_act_got = 0;
 static uint8_t  g_act_sn = 1;
+static uint32_t g_act_cycle = 0;
+static uint8_t  g_act_fails[N_POLLS];
+static bool     g_act_done[N_POLLS];
 
 static bool act_busy() { return g_act != A_OFF; }
 
 const char *canbus_mode() {
   return g_act_confirmed ? "active" : g_seen_alive ? "passive" : "unknown";
+}
+
+// Is request i due in this cycle?
+static bool act_due(uint8_t i) {
+  if (!g_act_confirmed) return i < N_PROBE;
+  const PollReq &p = POLLS[i];
+  if (p.every == 0) { if (g_act_done[i]) return false; }
+  else if (g_act_cycle % p.every != 0) return false;
+  if (g_act_fails[i] >= 3 && g_act_cycle % 30 != 0) return false;   // absent module: ask rarely
+  return true;
+}
+
+// First due request at or after i, or N_POLLS if none.
+static uint8_t act_find(uint8_t i) {
+  while (i < N_POLLS && !act_due(i)) i++;
+  return i;
 }
 
 void canbus_active_auto(bool bus_alive) {
@@ -426,22 +493,25 @@ void canbus_active_auto(bool bus_alive) {
   Serial.printf("[act] CAR-CAN silent, probing (%u/%u)\n", g_act_probes, ACT_MAX_PROBES);
   vin_set_mode(TWAI_MODE_NORMAL);
   g_act_idx = 0;
+  g_act_cycle = 0;
   g_act_cycle_ok = false;
   g_act_next = now + 150;          // let the controller sync to the bus first
   g_act = A_SETTLE;
 }
 
-// Advance to the next request, or finish the cycle.
+// Advance to the next due request, or finish the cycle.
 static void act_next(uint32_t now) {
-  g_act_idx++;
-  if (g_act_idx < N_POLLS) { g_act = A_IDLE; g_act_next = now + 200; return; }
-  if (g_act_cycle_ok) {
-    if (!g_act_confirmed) Serial.println("[act] car answers: active mode");
+  g_act_idx = act_find(g_act_idx + 1);
+  if (g_act_idx < N_POLLS) { g_act = A_IDLE; g_act_next = now + ACT_GAP_MS; return; }
+  if (g_act_cycle_ok && !g_act_confirmed) {
+    Serial.println("[act] car answers: active mode");
     g_act_confirmed = true;
   }
   if (g_act_confirmed) {
-    g_act_idx = g_vin_known ? 1 : 0;
+    g_act_cycle++;
     g_act_cycle_ok = false;
+    g_act_idx = act_find(0);
+    if (g_act_idx >= N_POLLS) g_act_idx = 0;
     g_act = A_IDLE;
     g_act_next = now + ACT_CYCLE_MS;
     return;
@@ -453,7 +523,8 @@ static void act_next(uint32_t now) {
 }
 
 static void act_done(bool ok, uint32_t now) {
-  if (ok) g_act_cycle_ok = true;
+  if (ok) { g_act_cycle_ok = true; g_act_fails[g_act_idx] = 0; g_act_done[g_act_idx] = true; }
+  else if (g_act_fails[g_act_idx] < 255) g_act_fails[g_act_idx]++;
   act_next(now);
 }
 
@@ -468,6 +539,14 @@ static void act_tick(uint32_t now) {
   if ((int32_t)(now - g_act_deadline) > 0) act_done(false, now);
 }
 
+// Does this frame answer the request being polled (service and identifier match)?
+static bool act_matches(const PollReq &p, const uint8_t *d, bool first_frame) {
+  const uint8_t o = first_frame ? 2 : 1;               // payload starts after the PCI (and length) byte
+  if (d[o] != (uint8_t)(p.req[1] + 0x40)) return false;
+  if (d[o + 1] != p.req[2]) return false;
+  return p.req[1] != 0x22 || d[o + 2] == p.req[3];
+}
+
 static void act_feed(const LogRecord &r) {
   if (g_act != A_WAIT && g_act != A_CF) return;
   const PollReq &p = POLLS[g_act_idx];
@@ -480,12 +559,12 @@ static void act_feed(const LogRecord &r) {
       if (r.data[1] == 0x7F && r.data[2] == p.req[1]) {
         if (r.data[3] == 0x78) { g_act_deadline = now + 2000; return; }   // response pending
         act_done(false, now);
-      } else if (r.data[1] == (uint8_t)(p.req[1] + 0x40)) {
+      } else if (act_matches(p, r.data, false)) {
         act_done(true, now);
       }
       return;
     }
-    if (pci != 0x10) return;
+    if (pci != 0x10 || !act_matches(p, r.data, true)) return;
     g_act_len = ((r.data[0] & 0x0F) << 8) | r.data[1];
     memcpy(g_act_buf, r.data + 2, 6);
     g_act_got = 6;
@@ -503,6 +582,7 @@ static void act_feed(const LogRecord &r) {
     memcpy(g_act_buf + g_act_got, r.data + 1, min<uint16_t>(take, sizeof(g_act_buf) - g_act_got));
   g_act_got += take;
   g_act_sn++;
+  g_act_deadline = now + 1000;                  // still receiving
   if (g_act_got < g_act_len) return;
 
   bool ok = g_act_buf[0] == (uint8_t)(p.req[1] + 0x40);
