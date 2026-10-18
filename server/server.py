@@ -178,9 +178,12 @@ def decoded(cid=None):
             """SELECT board, ch, id, dlc, data, MAX(t) FROM frames
                WHERE conn=? AND t>? AND flags&4=0 AND flags&1=0 GROUP BY board, ch, id""",
             (cid, now - WINDOW)).fetchall()
-        replies = db.execute(
-            """SELECT id, data, t FROM frames WHERE conn=? AND board=1 AND ch=1 AND flags&4=0
-               AND id IN (1946, 1979, 1891) ORDER BY t DESC LIMIT 400""", (cid,)).fetchall()[::-1]
+        replies = []
+        for rid in (1946, 1979, 1891):        # 0x79A, 0x7BB, 0x763: last frames of each reply id
+            replies += db.execute(
+                """SELECT id, data, t FROM frames WHERE conn=? AND board=1 AND ch=1 AND flags&4=0
+                   AND id=? ORDER BY t DESC LIMIT 60""", (cid, rid)).fetchall()
+        replies.sort(key=lambda r: r[2])
     frames = []
     for b, c, i, d, x, _ in latest:
         name = CHANNELS.get(str(b), {}).get("AB"[c], {}).get("name")
