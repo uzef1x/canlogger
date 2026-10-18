@@ -160,7 +160,9 @@ function renderDecoded(d) {
   const order = ["Vehicle", "Battery", "Charging", "Drive", "Climate", "Chassis", "Body"];
   const groups = {};
   // the cell and module voltage summaries are shown in the cell table below, not as cards
-  const inTable = v => /^(Cell|Module) voltage (min|max|average|spread)$/.test(v.name);
+  // also dropped as duplicates: the VIN (in the Car card) and the health block's second capacity and raw SOH
+  const inTable = v => /^(Cell|Module) voltage (min|max|average|spread)$/.test(v.name)
+    || ["VIN", "Pack capacity (health block)", "State of health (raw)"].includes(v.name);
   pol.filter(v => !inTable(v)).forEach(v => (groups[v.group] = groups[v.group] || []).push(v));
   // first in the Battery group: state of health, state of charge, Hx
   const top = ["State of health", "State of charge", "Hx"];
