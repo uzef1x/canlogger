@@ -190,9 +190,10 @@ function renderDecoded(d) {
       const cells = d.cells.slice(m * 4, m * 4 + 4);
       const sum = cells.reduce((a, b) => a + b, 0) / 1000;
       const tiles = cells.map((c, i) => {
-        const l = judged ? lvl(Math.abs(c - avg), 15, 50) : "ok";     // good cells stay plain, only problems get colour
-        const bg = l === "ok" ? "" : `background:${tint(l)};font-weight:600`;
-        return `<td class="m" style="${bg}" title="cell ${m * 4 + i + 1}: ${c - Math.round(avg) >= 0 ? "+" : ""}${c - Math.round(avg)} mV from average">${(c / 1000).toFixed(3)} V</td>`;
+        // heat-map: green at the average, through yellow, to red at 50 mV away
+        const dv = c - Math.round(avg), hue = Math.round(120 * (1 - Math.min(Math.abs(dv), 50) / 50));
+        return `<td class="m" style="padding:3px 6px"><div title="cell ${m * 4 + i + 1}: ${dv >= 0 ? "+" : ""}${dv} mV from average"
+          style="background:hsl(${hue} 55% 32%);color:#fff;border-radius:5px;padding:4px 0;text-align:center">${(c / 1000).toFixed(3)} V</div></td>`;
       }).join("");
       rows.push(`<tr><td>M${m + 1} <span class="sub">(#${m * 4 + 1}–#${m * 4 + cells.length})</span></td>
         <td class="m"><b>${sum.toFixed(2)} V</b></td>${tiles}</tr>`);
