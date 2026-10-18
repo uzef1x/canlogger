@@ -205,9 +205,10 @@ function renderDecoded(d) {
         return `<td class="m" style="padding:3px 6px"><div title="cell ${m * 4 + i + 1}: ${dv >= 0 ? "+" : ""}${dv} mV from average"
           style="background:${bg};color:#fff;border-radius:5px;padding:4px 0;text-align:center">${(c / 1000).toFixed(3)} V</div></td>`;
       }).join("");
-      // a module with any cell more than 10 mV from the average is out of balance: orange text
-      const off = cells.some(c => Math.abs(c - Math.round(avg)) > 10);
-      rows.push(`<tr><td${off ? ' style="color:hsl(30 90% 55%);font-weight:600"' : ""}>M${m + 1} <span class="sub">(#${m * 4 + 1}–#${m * 4 + cells.length})</span></td>
+      // module name: orange when a cell is 10-30 mV from the average, red beyond 30 mV
+      const worst = Math.max(...cells.map(c => Math.abs(c - Math.round(avg))));
+      const mc = worst > 30 ? "hsl(0 80% 60%)" : worst > 10 ? "hsl(30 90% 55%)" : "";
+      rows.push(`<tr><td${mc ? ` style="color:${mc};font-weight:600"` : ""}>M${m + 1} <span class="sub">(#${m * 4 + 1}–#${m * 4 + cells.length})</span></td>
         <td class="m"><b>${sum.toFixed(2)} V</b></td>${tiles}</tr>`);
     }
     $("cells").innerHTML = `<div class="card ${vk}" style="margin-bottom:8px"><span class="dot"></span><b>Cell spread ${spread} mV: ${verdict}</b>
