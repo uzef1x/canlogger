@@ -53,6 +53,7 @@
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
       <label class="sub">VIN <select id="hvin"></select></label>
       <label class="sub">Session <select id="hses"></select></label>
+      <button id="hdel">Delete session</button>
     </div>
     <div id="scrollbox" style="display:none;margin-top:12px">
       <input type="range" id="hscr" step="1">
@@ -158,6 +159,15 @@ async function show() {
 
 $("hvin").onchange = fillSessions;
 $("hses").onchange = pickSession;
+$("hdel").onclick = async () => {
+  if (!ses) return;
+  const c = cars[$("hvin").value];
+  if (!confirm(`Delete this session permanently?\n${c.vin || "VIN unknown"}\n${day(ses.start)} ${clock(ses.start)}\u2013${clock(ses.end)}, ${ses.frames.toLocaleString()} frames`)) return;
+  const r = await fetch(`/api/delete?conn=${ses.id}`, {method: "POST"});
+  if (!r.ok) { alert("Not deleted: " + await r.text()); return; }
+  ses = null;
+  loadCars();
+};
 $("hscr").oninput = () => moved(false);
 const nudge = s => { const r = $("hscr"); r.value = Math.max(+r.min, Math.min(+r.max, +r.value + s)); moved(false); };
 $("hback").onclick = () => nudge(-10);

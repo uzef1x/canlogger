@@ -328,6 +328,20 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/api/fast":                  # dashboard button
             fast["on"] = parse_qs(u.query).get("on", ["0"])[0] == "1"
             return self._send(200, json.dumps(fast).encode())
+        if u.path == "/api/delete":                # recorded-data page: remove one session
+            try:
+                cid = int(parse_qs(u.query).get("conn", [""])[0])
+            except ValueError:
+                return self._send(400)
+            with db_lock:
+                if cid == conn["id"] and time.time() - conn["last"] <= ACTIVE_S:
+                    return self._send(409, b"session is still live", "text/plain")
+                db.execute("DELETE FROM frames WHERE conn=?", (cid,))
+                db.execute("DELETE FROM events WHERE conn=?", (cid,))
+                n = db.execute("DELETE FROM connections WHERE id=?", (cid,)).rowcount
+                db.commit()
+                replays.pop(cid, None)
+            return self._send(200 if n else 404, b"ok" if n else b"no such session", "text/plain")
         if u.path != "/ingest":
             return self._send(404)
         rx = time.time()
