@@ -89,6 +89,7 @@
 </main>
 <script>
 const $ = id => document.getElementById(id);
+const cellbox = $("cellbox");
 const fmtAge = a => a == null ? "never" : a < 1 ? "<1 s ago" : a < 90 ? Math.round(a) + " s ago" : Math.round(a/60) + " min ago";
 const esc = s => String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 let sel = "";
@@ -169,9 +170,11 @@ function renderDecoded(d) {
     `<div class="sub" style="margin:8px 0 4px">${esc(g)}</div><div class="grid" style="margin-bottom:8px">` +
     groups[g].map(v => `<div class="card" title="updated ${v.age} s ago"><div class="sub">${esc(v.name)}</div>
       <div class="big" style="font-size:20px">${esc(fmt(v.value))} <span class="sub">${esc(v.unit)}</span></div></div>`).join("") +
-    `</div>`).join("");
+    `</div>` + (g === "Battery" ? `<div id="cellslot"></div>` : "")).join("");
+  // the cell voltage table goes right under the Battery cards
+  ($("cellslot") || $("valbox")).appendChild(cellbox);
   const cv = (d.cells || []).filter(c => c > 0 && c < 6000);
-  $("cellbox").style.display = cv.length ? "" : "none";
+  cellbox.style.display = cv.length ? "" : "none";
   if (cv.length) {
     const avg = cv.reduce((a, b) => a + b, 0) / cv.length;
     const spread = Math.max(...cv) - Math.min(...cv);
