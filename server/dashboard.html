@@ -60,7 +60,7 @@
     <div id="vals"></div>
     <div id="cellbox" style="display:none">
       <h2>Battery cell voltages <span class="sub" id="cellsum"></span></h2>
-      <div class="card"><div id="cells" style="display:grid;grid-template-columns:repeat(12,1fr);gap:3px"></div></div>
+      <div id="cells"></div>
     </div>
   </div>
 
@@ -170,11 +170,22 @@ function renderDecoded(d) {
   if (cv.length) {
     const avg = cv.reduce((a, b) => a + b, 0) / cv.length;
     $("cellsum").textContent = `${Math.min(...cv)}–${Math.max(...cv)} mV, average ${Math.round(avg)} mV`;
-    $("cells").innerHTML = (d.cells).map((c, i) => {
-      const dev = Math.max(-1, Math.min(1, (c - avg) / 20));
-      const col = dev < 0 ? `rgba(220,38,38,${-dev * .6})` : `rgba(37,99,235,${dev * .6})`;
-      return `<div title="cell pair ${i + 1}: ${c} mV" style="background:${col};border:1px solid var(--line);border-radius:3px;font-size:10px;text-align:center;padding:2px 0">${c}</div>`;
-    }).join("");
+    // 24 modules of 4 consecutive cells, as in the Autel battery report of this car.
+    const rows = [];
+    for (let m = 0; m < 24 && m * 4 < d.cells.length; m++) {
+      const cells = d.cells.slice(m * 4, m * 4 + 4);
+      const sum = cells.reduce((a, b) => a + b, 0) / 1000;
+      const tiles = cells.map((c, i) => {
+        const dev = Math.max(-1, Math.min(1, (c - avg) / 10));
+        const col = dev < 0 ? `rgba(220,38,38,${-dev * .5})` : `rgba(37,99,235,${dev * .5})`;
+        return `<td class="m" style="background:${col}" title="cell ${m * 4 + i + 1}">${(c / 1000).toFixed(3)} V</td>`;
+      }).join("");
+      rows.push(`<tr><td>M${m + 1} <span class="sub">(#${m * 4 + 1}–#${m * 4 + cells.length})</span></td>
+        <td class="m"><b>${sum.toFixed(2)} V</b></td>${tiles}</tr>`);
+    }
+    $("cells").innerHTML = `<div class="card"><div class="scroll" style="max-height:none"><table><thead><tr>
+      <th>Module</th><th>Voltage</th><th>Cell 1</th><th>Cell 2</th><th>Cell 3</th><th>Cell 4</th></tr></thead>
+      <tbody>${rows.join("")}</tbody></table></div></div>`;
   }
   const sg = d.signals || [];
   $("sigsum").textContent = !d.have_dbc ? "(signal files missing: run server/fetch_dbc.sh)"

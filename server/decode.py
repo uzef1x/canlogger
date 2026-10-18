@@ -198,9 +198,16 @@ def _group2(p):
     cells = [c for c in cells if 0 < c < 6000]
     if len(cells) < 90:
         return []
-    return [("Cell voltage min", min(cells), "mV", "Battery"), ("Cell voltage max", max(cells), "mV", "Battery"),
-            ("Cell voltage average", round(sum(cells) / len(cells)), "mV", "Battery"),
-            ("Cell voltage spread", max(cells) - min(cells), "mV", "Battery")]
+    out = [("Cell voltage min", min(cells), "mV", "Battery"), ("Cell voltage max", max(cells), "mV", "Battery"),
+           ("Cell voltage average", round(sum(cells) / len(cells)), "mV", "Battery"),
+           ("Cell voltage spread", max(cells) - min(cells), "mV", "Battery")]
+    if len(cells) == 96:              # 24 modules of 4 consecutive cells (Autel battery report of this car)
+        mods = [sum(cells[4 * m:4 * m + 4]) / 1000 for m in range(24)]
+        out += [("Module voltage min", round(min(mods), 2), "V", "Battery"),
+                ("Module voltage max", round(max(mods), 2), "V", "Battery"),
+                ("Module voltage average", round(sum(mods) / 24, 2), "V", "Battery"),
+                ("Module voltage spread", round(max(mods) - min(mods), 2), "V", "Battery")]
+    return out
 
 
 def cell_voltages(p):
