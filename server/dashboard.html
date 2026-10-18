@@ -178,7 +178,7 @@ function renderDecoded(d) {
     const cur = (pol.find(v => v.name === "Pack current (1)") || {}).value;
     const judged = typeof cur === "number" && Math.abs(cur) <= 5;
     const lvl = (v, good, bad) => v <= good ? "ok" : v <= bad ? "warn" : "bad";
-    const tint = k => `color-mix(in srgb, var(--${k}) 28%, transparent)`;
+    const tint = k => `color-mix(in srgb, var(--${k}) 35%, transparent)`;
     const verdict = judged
       ? {ok: "Good", warn: "Warning", bad: "Bad"}[lvl(spread, 30, 100)] : "Not judged";
     const vk = judged ? lvl(spread, 30, 100) : "";
@@ -190,7 +190,8 @@ function renderDecoded(d) {
       const cells = d.cells.slice(m * 4, m * 4 + 4);
       const sum = cells.reduce((a, b) => a + b, 0) / 1000;
       const tiles = cells.map((c, i) => {
-        const bg = judged ? `background:${tint(lvl(Math.abs(c - avg), 15, 50))}` : "";
+        const l = judged ? lvl(Math.abs(c - avg), 15, 50) : "ok";     // good cells stay plain, only problems get colour
+        const bg = l === "ok" ? "" : `background:${tint(l)};font-weight:600`;
         return `<td class="m" style="${bg}" title="cell ${m * 4 + i + 1}: ${c - Math.round(avg) >= 0 ? "+" : ""}${c - Math.round(avg)} mV from average">${(c / 1000).toFixed(3)} V</td>`;
       }).join("");
       rows.push(`<tr><td>M${m + 1} <span class="sub">(#${m * 4 + 1}–#${m * 4 + cells.length})</span></td>
