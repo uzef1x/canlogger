@@ -206,6 +206,11 @@ function renderDecoded(d) {
       <div class="card"><div class="scroll" style="max-height:none"><table><thead><tr>
       <th>Module</th><th>Voltage</th><th>Cell 1</th><th>Cell 2</th><th>Cell 3</th><th>Cell 4</th></tr></thead>
       <tbody>${rows.join("")}</tbody></table></div></div>`;
+    const hist = (d.history || []).slice().reverse().map(e => `<tr><td class="m">${new Date(e.t * 1000).toLocaleTimeString()}</td>
+      <td>M${e.module}</td><td>cell ${e.cell}</td><td class="m">${e.dev > 0 ? "+" : ""}${e.dev} mV</td></tr>`).join("");
+    $("cells").innerHTML += `<div class="card" style="margin-top:8px"><div class="scroll" style="max-height:200px"><table><thead><tr>
+      <th>Out of balance since</th><th>Module</th><th>Worst cell</th><th>From average</th></tr></thead>
+      <tbody>${hist || `<tr><td colspan="4" class="empty">No module out of balance in this session.</td></tr>`}</tbody></table></div></div>`;
   }
   const sg = d.signals || [];
   $("sigsum").textContent = !d.have_dbc ? "(signal files missing: run server/fetch_dbc.sh)"

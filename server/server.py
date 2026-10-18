@@ -197,8 +197,34 @@ def decoded(cid=None):
     for v in pol:
         v["age"] = round(now - v.pop("t"), 1)
     cells = ps.msgs.get((0x7BB, 0x61, 0x02))
+    cv = decode.cell_voltages(cells[0]) if cells else []
     return {"active": True, "vin": vin, "dbc": label, "have_dbc": have_dbc, "signals": sigs,
-            "polled": pol, "cells": decode.cell_voltages(cells[0]) if cells else []}
+            "polled": pol, "cells": cv, "history": balance_history(cid, cv, now)}
+
+
+# Modules that went out of balance (a cell more than 10 mV from the average) in the current
+# session. Kept per connection, so a new session (new connection) starts with an empty list.
+balance_state = {}
+
+
+def balance_history(cid, cv, now):
+    for old in [k for k in balance_state if k != cid]:
+        del balance_state[old]
+    st = balance_state.setdefault(cid, {"off": set(), "events": []})
+    if len(cv) >= 4:
+        avg = round(sum(cv) / len(cv))
+        for m in range(len(cv) // 4):
+            devs = [c - avg for c in cv[4 * m:4 * m + 4]]
+            worst = max(devs, key=abs)
+            if abs(worst) > 10:
+                if m not in st["off"]:
+                    st["off"].add(m)
+                    st["events"].append({"t": now, "module": m + 1, "cell": 4 * m + devs.index(worst) + 1,
+                                         "dev": worst, "spread": max(cv) - min(cv)})
+                    del st["events"][:-200]
+            else:
+                st["off"].discard(m)
+    return st["events"]
 
 
 def cars():
