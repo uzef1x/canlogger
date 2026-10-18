@@ -35,6 +35,10 @@ static void server_result(bool ok) {
 // The certificate is only valid against the real date, so the clock is set from NTP first.
 static WiFiClientSecure g_tls;
 static bool g_tls_ready = false;
+// One HTTPClient for every request: its destructor closes the connection, so a new local object
+// per request threw the TLS connection away each time and cost a full handshake (about 1.5 s).
+static HTTPClient g_http;
+static uint32_t g_last_use = 0;       // millis() when the last request finished
 
 static bool clock_ok() {
   static bool asked = false;
@@ -47,6 +51,9 @@ static bool begin_request(HTTPClient &http, const String &url) {
   bool ok;
   if (url.startsWith("https://")) {
     if (!g_tls_ready) { g_tls.setCACert(ISRG_ROOT_X1); g_tls_ready = true; }
+    // The server drops an idle connection after its keep-alive timeout (Apache: 5 s). Writing into
+    // one it has already dropped fails, so close ours first when it has been idle that long.
+    if (g_tls.connected() && millis() - g_last_use > 4000) g_tls.stop();
     ok = http.begin(g_tls, url);
   } else {
     ok = http.begin(url);
@@ -55,6 +62,13 @@ static bool begin_request(HTTPClient &http, const String &url) {
   http.setReuse(true);
   if (SERVER_TOKEN[0]) http.addHeader("X-Logger-Token", SERVER_TOKEN);
   return true;
+}
+
+// Ends a request. A failed one also drops the connection, so the retry starts clean.
+static void finish_request(HTTPClient &http, bool ok) {
+  http.end();                          // keeps the TLS connection open for the next request
+  if (!ok) g_tls.stop();
+  g_last_use = millis();
 }
 
 bool uplink_connected() { return WiFi.status() == WL_CONNECTED; }
@@ -70,12 +84,14 @@ static void send_vin_result() {
   url.replace("/ingest", "/vin");
   char body[128];
   snprintf(body, sizeof(body), "board=%d&ok=%d&vin=%s&note=%s", LOGGER_BOARD_ID, ok ? 1 : 0, vin, note);
-  HTTPClient http;
+  HTTPClient &http = g_http;
   http.setTimeout(5000);
   if (begin_request(http, url)) {
     http.addHeader("Content-Type", "text/plain");
-    server_result(http.POST((uint8_t *)body, strlen(body)) == 200);
-    http.end();
+    const bool ok2 = http.POST((uint8_t *)body, strlen(body)) == 200;
+    http.getString();                  // read the reply so none of it is left in front of the next one
+    server_result(ok2);
+    finish_request(http, ok2);
   }
   Serial.printf("[vin] %s %s (%s)\n", ok ? "read" : "FAILED", vin, note);
 }
@@ -91,12 +107,14 @@ static void send_hello() {
                 "&ip=" + WiFi.localIP().toString() + "&bssid=" + WiFi.BSSIDstr();
   char vin[18];
   if (canbus_vin_known(vin)) body += String("&vin=") + vin;   // lets a restarted server relabel the car
-  HTTPClient http;
+  HTTPClient &http = g_http;
   http.setTimeout(3000);
   if (begin_request(http, url)) {
     http.addHeader("Content-Type", "text/plain");
-    server_result(http.POST((uint8_t *)body.c_str(), body.length()) == 200);
-    http.end();
+    const bool ok2 = http.POST((uint8_t *)body.c_str(), body.length()) == 200;
+    http.getString();
+    server_result(ok2);
+    finish_request(http, ok2);
   }
 }
 
@@ -143,19 +161,19 @@ static void uplink_task(void *) {
     h.pad[0] = h.pad[1] = h.pad[2] = 0;
     memcpy(g_body, &h, sizeof(h));
 
-    HTTPClient http;
-    http.setReuse(true);
+    HTTPClient &http = g_http;
     http.setConnectTimeout(3000);
     http.setTimeout(20000);   // a timed-out reply makes the board resend a batch the server may already have stored
     int code = -1;
-    const bool was_open = g_tls.connected();
+    bool was_open = false;
     const uint32_t t0 = millis();
     if (begin_request(http, server_url())) {
+      was_open = g_tls.connected();    // after begin_request, which may have closed an idle connection
       http.addHeader("Content-Type", "application/octet-stream");
       code = http.POST(g_body, sizeof(LogHeader) + enc);
       server_result(code == 200);
       if (code == 200) canbus_set_fast_cells(http.getString().indexOf("fast") >= 0);
-      http.end();
+      finish_request(http, code == 200);
     }
     Serial.printf("[uplink] n=%lu %lu bytes code=%d %lu ms reused=%d\n", (unsigned long)used,
                   (unsigned long)enc, code, (unsigned long)(millis() - t0), (int)was_open);
