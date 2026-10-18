@@ -203,28 +203,30 @@ def decoded(cid=None):
 
 
 # Modules that went out of balance (a cell more than 10 mV from the average) in the current
-# session. Kept per connection, so a new session (new connection) starts with an empty list.
+# session, one entry per module with its peaks like the min/max of a meter. Kept per connection,
+# so a new session (new connection) starts with an empty list.
 balance_state = {}
 
 
 def balance_history(cid, cv, now):
     for old in [k for k in balance_state if k != cid]:
         del balance_state[old]
-    st = balance_state.setdefault(cid, {"off": set(), "events": []})
+    mods = balance_state.setdefault(cid, {})
     if len(cv) >= 4:
         avg = round(sum(cv) / len(cv))
         for m in range(len(cv) // 4):
             devs = [c - avg for c in cv[4 * m:4 * m + 4]]
             worst = max(devs, key=abs)
-            if abs(worst) > 10:
-                if m not in st["off"]:
-                    st["off"].add(m)
-                    st["events"].append({"t": now, "module": m + 1, "cell": 4 * m + devs.index(worst) + 1,
-                                         "dev": worst, "spread": max(cv) - min(cv)})
-                    del st["events"][:-200]
-            else:
-                st["off"].discard(m)
-    return st["events"]
+            e = mods.get(m + 1)
+            if e is None and abs(worst) > 10:
+                e = mods[m + 1] = {"module": m + 1, "first": now, "peak": 0, "min": 0, "max": 0}
+            if e is None:
+                continue
+            if abs(worst) > abs(e["peak"]):
+                e.update(peak=worst, cell=4 * m + devs.index(worst) + 1, t=now)
+            e["min"] = min(e["min"], min(devs))
+            e["max"] = max(e["max"], max(devs))
+    return sorted(mods.values(), key=lambda e: -abs(e["peak"]))
 
 
 def cars():
