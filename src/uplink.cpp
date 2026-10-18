@@ -6,12 +6,53 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <time.h>
+#include "ca_cert.h"
 #include "esp_timer.h"
 #include "esp_system.h"
 
 static uint32_t g_boot_id;
 static volatile uint32_t g_sent = 0;
 static uint8_t *g_body = nullptr;
+
+// Two server addresses: the logger stays on one until two requests in a row fail, then tries the other.
+static uint8_t g_url_idx = 0, g_url_fails = 0;
+static String server_url() { return (g_url_idx && SERVER_URL_ALT[0]) ? String(SERVER_URL_ALT) : String(SERVER_URL); }
+static void server_result(bool ok) {
+  if (ok) { g_url_fails = 0; return; }
+  if (++g_url_fails >= 2 && SERVER_URL_ALT[0]) {
+    g_url_idx ^= 1;
+    g_url_fails = 0;
+    Serial.printf("[uplink] switching server to %s\n", server_url().c_str());
+  }
+}
+
+// https:// URLs go through one shared TLS client (the connection is kept open between requests).
+// The certificate is only valid against the real date, so the clock is set from NTP first.
+static WiFiClientSecure g_tls;
+static bool g_tls_ready = false;
+
+static bool clock_ok() {
+  static bool asked = false;
+  if (time(nullptr) > 1700000000) return true;
+  if (!asked) { configTime(0, 0, "pool.ntp.org", "time.google.com"); asked = true; }
+  return false;
+}
+
+static bool begin_request(HTTPClient &http, const String &url) {
+  bool ok;
+  if (url.startsWith("https://")) {
+    if (!g_tls_ready) { g_tls.setCACert(ISRG_ROOT_X1); g_tls_ready = true; }
+    ok = http.begin(g_tls, url);
+  } else {
+    ok = http.begin(url);
+  }
+  if (!ok) return false;
+  http.setReuse(true);
+  if (SERVER_TOKEN[0]) http.addHeader("X-Logger-Token", SERVER_TOKEN);
+  return true;
+}
 
 bool uplink_connected() { return WiFi.status() == WL_CONNECTED; }
 uint32_t uplink_sent() { return g_sent; }
@@ -22,15 +63,15 @@ static void send_vin_result() {
   char vin[18], note[48];
   bool ok;
   if (!canbus_vin_take(vin, ok, note)) return;
-  String url = SERVER_URL;
+  String url = server_url();
   url.replace("/ingest", "/vin");
   char body[128];
   snprintf(body, sizeof(body), "board=%d&ok=%d&vin=%s&note=%s", LOGGER_BOARD_ID, ok ? 1 : 0, vin, note);
   HTTPClient http;
   http.setTimeout(5000);
-  if (http.begin(url)) {
+  if (begin_request(http, url)) {
     http.addHeader("Content-Type", "text/plain");
-    http.POST((uint8_t *)body, strlen(body));
+    server_result(http.POST((uint8_t *)body, strlen(body)) == 200);
     http.end();
   }
   Serial.printf("[vin] %s %s (%s)\n", ok ? "read" : "FAILED", vin, note);
@@ -41,7 +82,7 @@ static void send_hello() {
   static uint32_t last = 0;
   if (last && millis() - last < 60000) return;
   last = millis();
-  String url = SERVER_URL;
+  String url = server_url();
   url.replace("/ingest", "/hello");
   String body = "board=" + String(LOGGER_BOARD_ID) + "&ssid=" + WiFi.SSID() +
                 "&ip=" + WiFi.localIP().toString() + "&bssid=" + WiFi.BSSIDstr();
@@ -49,9 +90,9 @@ static void send_hello() {
   if (canbus_vin_known(vin)) body += String("&vin=") + vin;   // lets a restarted server relabel the car
   HTTPClient http;
   http.setTimeout(3000);
-  if (http.begin(url)) {
+  if (begin_request(http, url)) {
     http.addHeader("Content-Type", "text/plain");
-    http.POST((uint8_t *)body.c_str(), body.length());
+    server_result(http.POST((uint8_t *)body.c_str(), body.length()) == 200);
     http.end();
   }
 }
@@ -72,6 +113,10 @@ static void uplink_task(void *) {
       WiFi.disconnect();
       WiFi.begin(WIFI_SSID, WIFI_PASS);
       down_since = millis();
+    }
+    if (uplink_connected() && server_url().startsWith("https://") && !clock_ok()) {
+      vTaskDelay(pdMS_TO_TICKS(500));    // waiting for NTP: a TLS certificate cannot be checked without the date
+      continue;
     }
     if (uplink_connected()) { send_hello(); send_vin_result(); }
     if (!uplink_connected() || ring_used() == 0) {
@@ -98,9 +143,10 @@ static void uplink_task(void *) {
     http.setConnectTimeout(3000);
     http.setTimeout(5000);
     int code = -1;
-    if (http.begin(SERVER_URL)) {
+    if (begin_request(http, server_url())) {
       http.addHeader("Content-Type", "application/octet-stream");
       code = http.POST(g_body, sizeof(LogHeader) + n * sizeof(LogRecord));
+      server_result(code == 200);
       if (code == 200) canbus_set_fast_cells(http.getString().indexOf("fast") >= 0);
       http.end();
     }

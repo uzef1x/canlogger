@@ -25,6 +25,17 @@
 #define SERVER_URL "http://172.20.10.2:8000/ingest"
 #endif
 
+// Optional second server address (e.g. the Mac on the home network when SERVER_URL is its
+// hotspot address). After 2 failed requests in a row the logger switches to the other one.
+#ifndef SERVER_URL_ALT
+#define SERVER_URL_ALT ""
+#endif
+
+// Secret sent to the server in the X-Logger-Token header (set it in config_local.h, never commit it).
+#ifndef SERVER_TOKEN
+#define SERVER_TOKEN ""
+#endif
+
 // Capture ring buffer, in 24-byte records (lives in PSRAM). 131072 = 3 MiB.
 #ifndef RING_RECORDS
 #define RING_RECORDS 131072
