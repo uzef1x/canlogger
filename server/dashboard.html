@@ -53,10 +53,7 @@
   <div class="grid" id="car"></div>
 
   <h2>Boards</h2>
-  <div class="grid" id="boards"></div>
-
-  <h2>Channels</h2>
-  <div class="grid" id="chans"></div>
+  <div class="grid" id="boards" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr))"></div>
 
   <div id="valbox" style="display:none">
     <h2>Values read from the car</h2>
@@ -121,23 +118,25 @@ function renderCar(c) {
 function render(d) {
   $("win").textContent = d.window;
   renderCar(d.car);
+  const chanCard = c => {
+    const cls = c.last_age == null ? "" : c.last_age < 5 ? "ok" : c.last_age < 30 ? "warn" : "bad";
+    return `<div class="card ${cls}" style="padding:8px"><div class="t" style="white-space:nowrap"><span><span class="dot"></span>${esc(c.name || "?")}</span></div>
+      <div class="sub">port ${c.ch} · ${c.fd ? "FD-capable" : "classic"}</div>
+      <div class="big" style="font-size:20px">${c.rate.toFixed(1)} <span class="sub">fps</span></div>
+      <div class="sub">${c.total.toLocaleString()} total · ${fmtAge(c.last_age)}</div></div>`;
+  };
   $("boards").innerHTML = d.boards.length ? d.boards.map(b => {
     const idle = b.last_rx_age == null;
     const cls = idle ? "warn" : b.last_rx_age < 5 ? "ok" : b.last_rx_age < 30 ? "warn" : "bad";
+    const chans = d.channels.filter(c => c.board === b.board);
     return `<div class="card ${cls}"><div class="t"><span><span class="dot"></span>Board ${b.board}</span>
       ${b.boot_id == null ? "" : `<span class="badge">boot ${b.boot_id.toString(16)}</span>`}</div>
       <div class="sub">${b.ssid ? esc(b.ssid) : "network unknown"} &nbsp;${rssiBars(b.rssi)}</div>
       <div class="sub">${idle ? "online, no CAN traffic" : "last upload " + fmtAge(b.last_rx_age)}</div>
-      ${b.dropped > 0 ? `<div class="sub" style="color:var(--bad)">dropped ${b.dropped.toLocaleString()} frames</div>` : ""}</div>`;
+      ${b.dropped > 0 ? `<div class="sub" style="color:var(--bad)">dropped ${b.dropped.toLocaleString()} frames</div>` : ""}
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-top:10px">
+        ${chans.map(chanCard).join("")}</div></div>`;
   }).join("") : `<div class="empty">No board has uploaded yet.</div>`;
-
-  $("chans").innerHTML = d.channels.map(c => {
-    const cls = c.last_age == null ? "" : c.last_age < 5 ? "ok" : c.last_age < 30 ? "warn" : "bad";
-    return `<div class="card ${cls}"><div class="t"><span><span class="dot"></span>${esc(c.name || "?")}</span>
-      <span class="badge">B${c.board} ${c.ch} · ${c.fd ? "FD-capable" : "classic"}</span></div>
-      <div class="big">${c.rate.toFixed(1)} <span class="sub">fps</span></div>
-      <div class="sub">${c.total.toLocaleString()} total · ${fmtAge(c.last_age)}</div></div>`;
-  }).join("");
 
   const opts = d.channels.map(c => `${c.board}${c.ch}`);
   const f = $("flt");
