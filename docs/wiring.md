@@ -12,7 +12,7 @@ source and is paywalled; verify against it or by meter before connecting.
 | 13 / 12 | EV-CAN high / low ("primary CAN") | leaf-obd manual (13 = H, 12 = L), OpenEnergyMonitor cable (13 = H, 12 = L) | medium-high (two independent sources, both community) |
 | 11 / 3 | AV-CAN high / low | leaf-obd manual only (it cites a mynissanleaf.com forum thread) | **low** (single source, not independently confirmed) |
 | 16 | permanent +12 V | ISO 15031-3, both sources | high |
-| 8 | +12 V only when vehicle powered on | leaf-obd manual only (forum-derived) | low-medium |
+| 8 | +12 V only when vehicle powered on | leaf-obd manual (forum-derived); **measured by the owner on 4 cars on 2026-10-18** (ZE0, AZE0, ZE1, e-NV200): 0 V with ignition off and while charging with the car off, about 12 V with ignition on | **high** (measured) |
 | 4 / 5 | chassis / signal ground | ISO 15031-3, OpenEnergyMonitor cable (pin 4) | high |
 
 - Protocol: ISO 15765-4 CAN, 11-bit IDs, 500 kbit/s (leaf-obd manual). One search result
@@ -60,7 +60,9 @@ source and is paywalled; verify against it or by meter before connecting.
 
 - A tap should not add a third 120 ohm. Remove RZ1/RZ2 on any port used as a tap.
 - Wire SGND (not DGND) to OBD pin 5.
-- Prefer powering from pin 8 (switched) if confirmed, otherwise add a switched supply.
+- Power the boards from pin 8 (switched). Measured on 4 cars (2026-10-18): pin 8 is 0 V with
+  ignition off and while charging, so the boards run only with ignition on and log nothing
+  while the car charges with the ignition off.
 
 ## Wiring table (verify with a meter first, see confidence levels above)
 
