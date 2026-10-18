@@ -49,14 +49,13 @@
   </div>
 
   <div id="live" style="display:none">
-  <h2>Car</h2>
+  <h2>VIN</h2>
   <div class="grid" id="car"></div>
 
   <h2>Boards</h2>
   <div id="boards"></div>
 
   <div id="valbox" style="display:none">
-    <h2>Values read from the car</h2>
     <div id="vals"></div>
     <div id="cellbox" style="display:none">
       <h2>Battery cell voltages</h2>
@@ -169,7 +168,7 @@ function renderDecoded(d) {
   (groups.Battery || []).sort((a, b) => (top.indexOf(a.name) + 1 || 99) - (top.indexOf(b.name) + 1 || 99));
   const fmt = v => typeof v === "number" ? v.toLocaleString(undefined, {maximumFractionDigits: 2}) : v;
   $("vals").innerHTML = Object.keys(groups).sort((a, b) => order.indexOf(a) - order.indexOf(b)).map(g =>
-    `<div class="sub" style="margin:8px 0 4px">${esc(g)}</div><div class="grid" style="margin-bottom:8px">` +
+    `<h2>${esc(g === "Battery" ? "HV Battery" : g)}</h2><div class="grid" style="margin-bottom:16px">` +
     groups[g].map(v => `<div class="card" title="updated ${v.age} s ago"><div class="sub">${esc(v.name)}</div>
       <div class="big" style="font-size:20px">${esc(fmt(v.value))} <span class="sub">${esc(v.unit)}</span></div></div>`).join("") +
     `</div>` + (g === "Battery" ? `<div id="cellslot"></div>` : "")).join("");
