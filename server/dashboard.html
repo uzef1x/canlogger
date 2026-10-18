@@ -222,7 +222,7 @@ function renderDecoded(d) {
       <td class="m" style="color:${col(e.peak)}"><b>${e.peak > 0 ? "+" : ""}${e.peak} mV</b></td>
       <td class="m">${tm(e.first)}</td></tr>`).join("");
     $("cells").innerHTML += `<div class="card" style="margin-top:8px"><div class="scroll" style="max-height:none"><table><thead><tr>
-      <th colspan="6">Cells that went out of balance (more than 10 mV from the average)</th></tr><tr>
+      <th colspan="6">Cells that went out of balance (more than 30 mV from the average)</th></tr><tr>
       <th>Module</th><th>Cell</th><th>Lowest</th><th>Highest</th><th>Worst vs average</th><th>First out</th></tr></thead>
       <tbody>${hist || `<tr><td colspan="6" class="empty">None in this session.</td></tr>`}</tbody></table></div></div>`;
   }

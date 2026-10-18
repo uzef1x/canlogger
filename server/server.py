@@ -203,7 +203,7 @@ def decoded(cid=None):
             "polled": pol, "cells": cv, "fast": fast["on"], "history": balance_history(cid, cv, now)}
 
 
-# Cells that went out of balance (more than 10 mV from the pack average) in the current session,
+# Cells that went out of balance (more than 30 mV from the pack average) in the current session,
 # one entry per cell with its lowest and highest voltage and its worst deviation, like the min/max
 # of a meter. Kept per connection, so a new session (new connection) starts with an empty list.
 balance_state = {}
@@ -218,7 +218,7 @@ def balance_history(cid, cv, now):
         for i, c in enumerate(cv):
             dv = c - avg
             e = cells.get(i + 1)
-            if e is None and abs(dv) > 10:
+            if e is None and abs(dv) > 30:
                 e = cells[i + 1] = {"cell": i + 1, "module": i // 4 + 1, "first": now,
                                     "lo": c, "hi": c, "peak": dv}
             if e is None:
