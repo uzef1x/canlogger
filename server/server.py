@@ -75,7 +75,7 @@ def init_db(path):
 
 def PAGE_VERSION():
     """Changes whenever dashboard.html changes, so an open page can reload itself."""
-    return os.path.getmtime(os.path.join(HERE, "dashboard.html"))
+    return max(os.path.getmtime(os.path.join(HERE, f)) for f in ("dashboard.html", "decoded.js"))
 
 
 def touch_conn(now, board=None, boot_id=None):
@@ -169,25 +169,30 @@ def _status():
             "channels": [chans[k] for k in sorted(chans)], "ids": ids, "recent": recent}
 
 
-def decoded(cid=None):
-    """Signals from the passive frames of the last WINDOW s and values from polled replies."""
+def decoded(cid=None, at=None):
+    """Signals from the passive frames of the last WINDOW s and values from polled replies.
+    With `at` (epoch seconds) the same view as it was at that moment of a past session."""
     with db_lock:
         now = time.time()
         if cid is None:
             if conn["id"] is None or now - conn["last"] > ACTIVE_S:
                 return {"active": False}
             cid = conn["id"]
-        row = db.execute("SELECT vin FROM connections WHERE id=?", (cid,)).fetchone()
+        ref = now if at is None else at
+        row = db.execute("SELECT vin, start_t, end_t FROM connections WHERE id=?", (cid,)).fetchone()
         vin = row[0] if row else None
         latest = db.execute(
             """SELECT board, ch, id, dlc, data, MAX(t) FROM frames
-               WHERE conn=? AND t>? AND flags&4=0 AND flags&1=0 GROUP BY board, ch, id""",
-            (cid, now - WINDOW)).fetchall()
-        ps = polled_states.setdefault(cid, decode.Polled())
-        marks = ",".join(str(i) for i in decode.REPLY_IDS)
-        ps.feed([(r, i, x, t) for r, i, x, t in db.execute(
-            f"""SELECT rowid, id, data, t FROM frames WHERE conn=? AND board=1 AND ch=1 AND flags&4=0
-                AND id IN ({marks}) AND rowid>? ORDER BY rowid""", (cid, ps.last_rowid))])
+               WHERE conn=? AND t>? AND t<=? AND flags&4=0 AND flags&1=0 GROUP BY board, ch, id""",
+            (cid, ref - WINDOW, ref)).fetchall()
+        if at is None:
+            ps = polled_states.setdefault(cid, decode.Polled())
+            marks = ",".join(str(i) for i in decode.REPLY_IDS)
+            ps.feed([(r, i, x, t) for r, i, x, t in db.execute(
+                f"""SELECT rowid, id, data, t FROM frames WHERE conn=? AND board=1 AND ch=1 AND flags&4=0
+                    AND id IN ({marks}) AND rowid>? ORDER BY rowid""", (cid, ps.last_rowid))])
+        else:
+            ps, past_cells = replay(cid, at)
     frames = []
     for b, c, i, d, x, _ in latest:
         name = CHANNELS.get(str(b), {}).get("AB"[c], {}).get("name")
@@ -196,11 +201,13 @@ def decoded(cid=None):
     sigs, label, have_dbc = decode.signals(frames, vin)
     pol = decode.polled(ps)
     for v in pol:
-        v["age"] = round(now - v.pop("t"), 1)
+        v["age"] = round(ref - v.pop("t"), 1)
     cells = ps.msgs.get((0x7BB, 0x61, 0x02))
     cv = decode.cell_voltages(cells[0]) if cells else []
+    hist = balance_history(cid, cv, now) if at is None else sorted(past_cells.values(), key=lambda e: e["cell"])
     return {"active": True, "vin": vin, "dbc": label, "have_dbc": have_dbc, "signals": sigs,
-            "polled": pol, "cells": cv, "fast": fast["on"], "history": balance_history(cid, cv, now)}
+            "polled": pol, "cells": cv, "fast": fast["on"], "history": hist, "t": ref,
+            "session": {"start": row[1], "end": row[2]} if row else None}
 
 
 # Cells that went out of balance (more than 30 mV from the pack average) in the current session,
@@ -209,24 +216,56 @@ def decoded(cid=None):
 balance_state = {}
 
 
+def balance_update(cells, cv, now):
+    if len(cv) < 4:
+        return
+    avg = round(sum(cv) / len(cv))
+    for i, c in enumerate(cv):
+        dv = c - avg
+        e = cells.get(i + 1)
+        if e is None and abs(dv) > 30:
+            e = cells[i + 1] = {"cell": i + 1, "module": i // 4 + 1, "first": now,
+                                "lo": c, "hi": c, "peak": dv}
+        if e is None:
+            continue
+        e["lo"], e["hi"] = min(e["lo"], c), max(e["hi"], c)
+        if abs(dv) > abs(e["peak"]):
+            e["peak"] = dv
+
+
 def balance_history(cid, cv, now):
     for old in [k for k in balance_state if k != cid]:
         del balance_state[old]
     cells = balance_state.setdefault(cid, {})
-    if len(cv) >= 4:
-        avg = round(sum(cv) / len(cv))
-        for i, c in enumerate(cv):
-            dv = c - avg
-            e = cells.get(i + 1)
-            if e is None and abs(dv) > 30:
-                e = cells[i + 1] = {"cell": i + 1, "module": i // 4 + 1, "first": now,
-                                    "lo": c, "hi": c, "peak": dv}
-            if e is None:
-                continue
-            e["lo"], e["hi"] = min(e["lo"], c), max(e["hi"], c)
-            if abs(dv) > abs(e["peak"]):
-                e["peak"] = dv
+    balance_update(cells, cv, now)
     return sorted(cells.values(), key=lambda e: e["cell"])
+
+
+# History view: the polled replies of a session replayed up to a moment, with the out-of-balance
+# list built from every cell reply on the way. The last few replays are kept so that moving the
+# slider forward only reads the new frames.
+replays = {}
+
+
+def replay(cid, at):
+    """(Polled, out-of-balance cells) of connection cid at time `at` (db_lock held)."""
+    r = replays.get(cid)
+    if r is None or r["at"] > at:
+        r = replays[cid] = {"ps": decode.Polled(), "cells": {}, "at": 0, "ct": None}
+        for old in list(replays)[:-3]:
+            del replays[old]
+    ps = r["ps"]
+    marks = ",".join(str(i) for i in decode.REPLY_IDS)
+    for rid, i, x, t in db.execute(
+            f"""SELECT rowid, id, data, t FROM frames WHERE conn=? AND board=1 AND ch=1 AND flags&4=0
+                AND id IN ({marks}) AND rowid>? AND t<=? ORDER BY rowid""", (cid, ps.last_rowid, at)).fetchall():
+        ps.feed([(rid, i, x, t)])
+        m = ps.msgs.get((0x7BB, 0x61, 0x02))
+        if m and m[1] != r["ct"]:
+            r["ct"] = m[1]
+            balance_update(r["cells"], decode.cell_voltages(m[0]), t)
+    r["at"] = at
+    return ps, r["cells"]
 
 
 def cars():
@@ -348,9 +387,14 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(status()).encode())
         if u.path == "/api/decoded":
             cid = int(q["conn"][0]) if "conn" in q else None
-            return self._send(200, json.dumps(decoded(cid)).encode())
+            at = float(q["at"][0]) if "at" in q else None
+            return self._send(200, json.dumps(decoded(cid, at)).encode())
         if u.path == "/api/cars":
             return self._send(200, json.dumps(cars(), indent=1).encode())
+        if u.path in ("/history", "/history.html", "/decoded.js"):
+            name = "decoded.js" if u.path.endswith(".js") else "history.html"
+            return self._send(200, open(os.path.join(HERE, name), "rb").read(),
+                              "application/javascript" if name.endswith(".js") else "text/html; charset=utf-8")
         if u.path in ("/", "/index.html"):
             return self._send(200, open(os.path.join(HERE, "dashboard.html"), "rb").read(),
                               "text/html; charset=utf-8")

@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CAN Logger: recorded data</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1b1f24; --mute:#6b7280; --line:#e3e6ea;
+          --ok:#16803c; --warn:#b45309; --bad:#b91c1c; --accent:#2563eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1216; --card:#171b21; --fg:#e6e8eb; --mute:#8b94a1; --line:#262c34;
+            --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; --accent:#60a5fa; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:16px; }
+  header { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px; }
+  h1 { font-size:18px; margin:0; } h2 { font-size:13px; margin:0 0 8px; color:var(--mute);
+       text-transform:uppercase; letter-spacing:.05em; font-weight:600; }
+  .conn { font-size:12px; color:var(--mute); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:12px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .card .t { display:flex; justify-content:space-between; font-weight:600; }
+  .big { font-size:26px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .sub { color:var(--mute); font-size:12px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; background:var(--mute); }
+  .ok .dot { background:var(--ok); } .warn .dot { background:var(--warn); } .bad .dot { background:var(--bad); }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:5px 12px; font:inherit; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  input[type=text] { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:4px 8px; font:inherit; width:100%; }
+  .vin { font-family:ui-monospace,Menlo,monospace; font-size:18px; font-weight:600; letter-spacing:.04em; }
+  .badge { font-size:11px; border:1px solid var(--line); border-radius:99px; padding:0 7px; color:var(--mute); }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:16px; }
+  .scroll { overflow:auto; max-height:360px; }
+  table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; }
+  th,td { text-align:left; padding:4px 10px 4px 0; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--mute); font-weight:600; font-size:12px; position:sticky; top:0; background:var(--card); }
+  td.m { font-family:ui-monospace,Menlo,monospace; }
+  .empty { color:var(--mute); padding:8px 0; }
+  select { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:3px 6px; }
+  nav a { color:var(--mute); } nav { font-size:14px; }
+  input[type=range] { width:100%; }
+</style>
+</head>
+<body>
+<main>
+  <header><h1>CAN Logger</h1><nav><a href="/">Live</a> &nbsp;<b>Recorded data</b></nav><span class="conn" id="conn"></span></header>
+
+  <div class="card" style="margin-bottom:12px">
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+      <label class="sub">VIN <select id="hvin"></select></label>
+      <label class="sub">Session <select id="hses"></select></label>
+    </div>
+    <div id="scrollbox" style="display:none;margin-top:12px">
+      <input type="range" id="hscr" step="1">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">
+        <span class="sub" id="hfrom"></span>
+        <span><button id="hback">&minus;10 s</button> <b id="htime" style="font-family:ui-monospace,Menlo,monospace"></b>
+          <span class="sub" id="hrel"></span> <button id="hfwd">+10 s</button></span>
+        <span class="sub" id="hto"></span>
+      </div>
+    </div>
+  </div>
+
+  <div id="none" class="card" style="text-align:center;padding:40px 12px">
+    <div class="big" style="font-weight:500">No recorded sessions</div>
+  </div>
+
+  <div id="live" style="display:none">
+  <h2>VIN</h2>
+  <div class="grid" id="car"></div>
+
+  <div id="valbox" style="display:none">
+    <div id="vals"></div>
+    <div id="cellbox" style="display:none">
+      <h2>Battery cell voltages</h2>
+      <div id="cells"></div>
+    </div>
+  </div>
+
+  <section>
+    <details id="sigbox">
+      <summary><b>Decoded signals</b> <span class="sub" id="sigsum"></span></summary>
+      <div style="margin:8px 0"><input type="text" id="sigflt" placeholder="filter by message or signal name"></div>
+      <div class="scroll"><table><thead><tr><th>Channel</th><th>ID</th><th>Signal</th><th>Value</th><th>Unit</th></tr></thead>
+      <tbody id="sigs"></tbody></table></div>
+    </details>
+  </section>
+  </div>
+</main>
+<script src="/decoded.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const cellbox = $("cellbox");
+const day = t => new Date(t * 1000).toLocaleDateString([], {day: "numeric", month: "short"});
+const clock = t => new Date(t * 1000).toLocaleTimeString([], {hour12: false});
+const dur = s => s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.round(s % 3600 / 60)} min` : s >= 60 ? `${Math.round(s / 60)} min` : `${Math.round(s)} s`;
+let cars = [], ses = null, timer = null;
+
+async function loadCars() {
+  cars = (await (await fetch("/api/cars", {cache: "no-store"})).json())
+    .map(c => ({...c, connections: c.connections.filter(x => x.frames > 0)}))
+    .filter(c => c.connections.length)
+    .sort((a, b) => Math.max(...b.connections.map(x => x.end)) - Math.max(...a.connections.map(x => x.end)));
+  $("hvin").innerHTML = cars.map((c, i) =>
+    `<option value="${i}">${esc(c.vin || "VIN unknown")} (${c.connections.length} ${c.connections.length === 1 ? "session" : "sessions"})</option>`).join("");
+  $("none").style.display = cars.length ? "none" : "";
+  $("scrollbox").style.display = $("live").style.display = "none";
+  if (cars.length) fillSessions();
+}
+
+function fillSessions() {
+  const c = cars[$("hvin").value];
+  const list = c.connections.slice().sort((a, b) => b.start - a.start);
+  $("hses").innerHTML = list.map(x =>
+    `<option value="${x.id}">${day(x.start)} ${clock(x.start)}\u2013${clock(x.end)} \u00b7 ${dur(x.end - x.start)} \u00b7 ${x.frames.toLocaleString()} frames</option>`).join("");
+  ses = null;
+  pickSession();
+}
+
+function pickSession() {
+  const c = cars[$("hvin").value];
+  ses = c.connections.find(x => x.id == $("hses").value);
+  if (!ses) return;
+  const s = $("hscr");
+  s.min = Math.floor(ses.start); s.max = Math.ceil(ses.end); s.value = s.max;
+  $("hfrom").textContent = clock(ses.start); $("hto").textContent = clock(ses.end);
+  $("scrollbox").style.display = $("live").style.display = "";
+  moved(true);
+}
+
+function moved(now) {
+  const t = +$("hscr").value;
+  $("htime").textContent = clock(t);
+  $("hrel").textContent = "(+" + dur(t - ses.start) + ")";
+  clearTimeout(timer);
+  timer = setTimeout(show, now ? 0 : 150);
+}
+
+async function show() {
+  if (!ses) return;
+  const t = +$("hscr").value, id = ses.id;
+  try {
+    const d = await (await fetch(`/api/decoded?conn=${id}&at=${t}`, {cache: "no-store"})).json();
+    if (!ses || ses.id !== id || +$("hscr").value !== t) return;   // moved on while loading
+    $("car").innerHTML = `<div class="card"><div class="t"><span>Vehicle</span>
+      <span class="badge">${day(ses.start)} ${clock(ses.start)} \u00b7 ${dur(ses.end - ses.start)}</span></div>
+      <div class="vin" style="${d.vin ? "" : "color:var(--mute)"}">${esc(d.vin || "VIN unknown")}</div></div>`;
+    renderDecoded(d);
+    $("conn").textContent = "";
+  } catch (e) {
+    $("conn").textContent = "server unreachable";
+  }
+}
+
+$("hvin").onchange = fillSessions;
+$("hses").onchange = pickSession;
+$("hscr").oninput = () => moved(false);
+const nudge = s => { const r = $("hscr"); r.value = Math.max(+r.min, Math.min(+r.max, +r.value + s)); moved(false); };
+$("hback").onclick = () => nudge(-10);
+$("hfwd").onclick = () => nudge(10);
+$("sigflt").oninput = show;
+$("sigbox").ontoggle = show;
+loadCars();
+</script>
+</body>
+</html>
