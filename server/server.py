@@ -153,8 +153,6 @@ def _status():
             "SELECT board, ch, COUNT(*) FROM frames WHERE conn=? AND t>? GROUP BY board, ch", (cid, since)):
         if (b, c) in chans:
             chans[(b, c)]["rate"] = n / WINDOW
-    if vin and "ZE1" in vin and (1, 1) in chans:    # the ZE1's OBD port only carries the diagnostic CAN
-        chans[(1, 1)]["name"] = "Diagnostic CAN (OBD 6/14)"
     ids = [{"board": b, "ch": "AB"[c], "id": f"0x{i:03X}", "rate": n / WINDOW,
             "dlc": d, "data": bytes(x).hex(" ")}
            for b, c, i, n, d, x in db.execute(
