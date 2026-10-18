@@ -158,7 +158,9 @@ function renderDecoded(d) {
   $("valbox").style.display = pol.length ? "" : "none";
   const order = ["Vehicle", "Battery", "Charging", "Drive", "Climate", "Chassis", "Body"];
   const groups = {};
-  pol.forEach(v => (groups[v.group] = groups[v.group] || []).push(v));
+  // the cell and module voltage summaries are shown in the cell table below, not as cards
+  const inTable = v => /^(Cell|Module) voltage (min|max|average|spread)$/.test(v.name);
+  pol.filter(v => !inTable(v)).forEach(v => (groups[v.group] = groups[v.group] || []).push(v));
   // first in the Battery group: state of health, state of charge, Hx
   const top = ["State of health", "State of charge", "Hx"];
   (groups.Battery || []).sort((a, b) => (top.indexOf(a.name) + 1 || 99) - (top.indexOf(b.name) + 1 || 99));
