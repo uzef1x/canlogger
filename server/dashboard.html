@@ -217,10 +217,11 @@ function renderDecoded(d) {
       <tbody>${rows.join("")}</tbody></table></div></div>`;
     const tm = t => new Date(t * 1000).toLocaleTimeString(), sg = v => (v > 0 ? "+" : "") + v + " mV";
     const hist = (d.history || []).map(e => `<tr><td>M${e.module}</td>
-      <td class="m"><b>${sg(e.peak)}</b> <span class="sub">cell ${e.cell} at ${tm(e.t)}</span></td>
+      <td class="m">${Object.entries(e.cells).sort((a, b) => a[0] - b[0]).map(([n, v]) =>
+        `<b>${sg(v)}</b> <span class="sub">cell ${n}</span>`).join(" &nbsp; ")}</td>
       <td class="m">${sg(e.min)}</td><td class="m">${sg(e.max)}</td><td class="m">${tm(e.first)}</td></tr>`).join("");
     $("cells").innerHTML += `<div class="card" style="margin-top:8px"><div class="scroll" style="max-height:none"><table><thead><tr>
-      <th>Out of balance</th><th>Peak from average</th><th>Lowest</th><th>Highest</th><th>First out</th></tr></thead>
+      <th>Out of balance</th><th>Peak from average, each affected cell</th><th>Lowest</th><th>Highest</th><th>First out</th></tr></thead>
       <tbody>${hist || `<tr><td colspan="5" class="empty">No module out of balance in this session.</td></tr>`}</tbody></table></div></div>`;
   }
   const sg = d.signals || [];

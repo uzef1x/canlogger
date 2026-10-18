@@ -220,11 +220,15 @@ def balance_history(cid, cv, now):
             worst = max(devs, key=abs)
             e = mods.get(m + 1)
             if e is None and abs(worst) > 10:
-                e = mods[m + 1] = {"module": m + 1, "first": now, "peak": 0, "min": 0, "max": 0}
+                e = mods[m + 1] = {"module": m + 1, "first": now, "peak": 0, "min": 0, "max": 0, "cells": {}}
             if e is None:
                 continue
             if abs(worst) > abs(e["peak"]):
                 e.update(peak=worst, cell=4 * m + devs.index(worst) + 1, t=now)
+            for i, dv in enumerate(devs):          # every cell that went past the limit, with its own peak
+                n = str(4 * m + i + 1)
+                if abs(dv) > 10 and abs(dv) > abs(e["cells"].get(n, 0)):
+                    e["cells"][n] = dv
             e["min"] = min(e["min"], min(devs))
             e["max"] = max(e["max"], max(devs))
     return sorted(mods.values(), key=lambda e: -abs(e["peak"]))
