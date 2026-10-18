@@ -37,12 +37,16 @@
   th { color:var(--mute); font-weight:600; font-size:12px; position:sticky; top:0; background:var(--card); }
   td.m { font-family:ui-monospace,Menlo,monospace; }
   .empty { color:var(--mute); padding:8px 0; }
+  .tabs { display:flex; gap:22px; border-bottom:1px solid var(--line); margin-bottom:14px; font-size:14px; }
+  .tabs a { padding:6px 2px; color:var(--mute); text-decoration:none; border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .tabs a.on { color:var(--fg); border-bottom-color:var(--fg); font-weight:600; }
   select { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:3px 6px; }
 </style>
 </head>
 <body>
 <main>
-  <header><h1>CAN Logger</h1><nav><b>Live</b> &nbsp;<a href="/history">Recorded data</a></nav><span class="conn" id="conn">connecting…</span></header>
+  <header><h1>CAN Logger</h1><span class="conn" id="conn">connecting…</span></header>
+  <div class="tabs"><a class="on" href="/">Live</a><a href="/history">Recorded data</a></div>
 
   <div id="none" class="card" style="display:none;text-align:center;padding:40px 12px">
     <div class="big" style="font-weight:500">No car connected</div>
