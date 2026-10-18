@@ -190,10 +190,11 @@ function renderDecoded(d) {
       const cells = d.cells.slice(m * 4, m * 4 + 4);
       const sum = cells.reduce((a, b) => a + b, 0) / 1000;
       const tiles = cells.map((c, i) => {
-        // heat-map: green at the average, through yellow, to red at 50 mV away
-        const dv = c - Math.round(avg), hue = Math.round(120 * (1 - Math.min(Math.abs(dv), 50) / 50));
+        // heat-map: grey at the average, blue below it, red above it, full colour at 25 mV away
+        const dv = c - Math.round(avg), t = Math.min(Math.abs(dv) / 25, 1);
+        const bg = `hsl(${dv < 0 ? 215 : 0} ${Math.round(8 + 57 * t)}% ${Math.round(30 + 4 * t)}%)`;
         return `<td class="m" style="padding:3px 6px"><div title="cell ${m * 4 + i + 1}: ${dv >= 0 ? "+" : ""}${dv} mV from average"
-          style="background:hsl(${hue} 55% 32%);color:#fff;border-radius:5px;padding:4px 0;text-align:center">${(c / 1000).toFixed(3)} V</div></td>`;
+          style="background:${bg};color:#fff;border-radius:5px;padding:4px 0;text-align:center">${(c / 1000).toFixed(3)} V</div></td>`;
       }).join("");
       rows.push(`<tr><td>M${m + 1} <span class="sub">(#${m * 4 + 1}–#${m * 4 + cells.length})</span></td>
         <td class="m"><b>${sum.toFixed(2)} V</b></td>${tiles}</tr>`);
