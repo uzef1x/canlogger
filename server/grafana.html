@@ -292,7 +292,7 @@ function openPicker(i) {
   $("dtitle").textContent = i < 0 ? "New panel" : "Panel signals";
   $("dname").value = i < 0 ? "" : panels[i].title;
   $("dflt").value = ""; $("dconst").checked = false;
-  window._sel = new Set(i < 0 ? [] : panels[i].keys);
+  window._sel = new Set(i < 0 ? panels.flatMap(p => p.keys) : panels[i].keys);   // a new panel starts with everything already on the dashboard ticked
   drawList(); $("dlg").showModal();
 }
 function drawList() {
