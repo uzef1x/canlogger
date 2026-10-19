@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CAN Logger: charts</title>
+<link rel="stylesheet" href="/vendor/uPlot.min.css">
+<style>
+  :root { --bg:#f1f3f6; --card:#fff; --fg:#1b1f24; --mute:#6b7280; --line:#e3e6ea; --grid:#e8eaee;
+          --ok:#16803c; --warn:#b45309; --bad:#b91c1c; --accent:#2563eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0b0e12; --card:#14181e; --fg:#e6e8eb; --mute:#8b94a1; --line:#242a32; --grid:#222831;
+            --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; --accent:#60a5fa; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:8px 14px; background:var(--card);
+         border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }
+  .bar b { font-size:15px; margin-right:6px; }
+  .bar a { color:var(--mute); text-decoration:none; margin-right:6px; }
+  .sp { flex:1; }
+  select, input[type=text], button { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:6px;
+          padding:4px 9px; font:inherit; }
+  button { cursor:pointer; } button:hover { border-color:var(--accent); } button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .sub { color:var(--mute); font-size:12px; }
+  main { padding:12px 14px 40px; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; margin-bottom:12px; }
+  .tile { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 10px 4px; min-height:92px; position:relative; }
+  .tile .n { color:var(--mute); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tile .v { font-size:28px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .tile .v small { font-size:12px; color:var(--mute); font-weight:400; }
+  .tile svg { width:100%; height:26px; display:block; }
+  .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 10px; min-width:0; }
+  .panel.wide { grid-column:1 / -1; }
+  .panel h3 { margin:0 0 4px; font-size:13px; display:flex; gap:6px; align-items:center; }
+  .panel h3 .sp { flex:1; }
+  .panel h3 button { padding:0 7px; font-size:12px; color:var(--mute); }
+  .gps { display:flex; flex-direction:column; align-items:center; justify-content:center; height:260px; color:var(--mute);
+         border:2px dashed var(--line); border-radius:6px; text-align:center;
+         background:repeating-linear-gradient(0deg,transparent 0 31px,var(--grid) 31px 32px),repeating-linear-gradient(90deg,transparent 0 31px,var(--grid) 31px 32px); }
+  .u-legend { font-size:11px; max-height:88px; overflow:auto; }
+  .u-legend .u-series th { padding:1px 6px; }
+  .u-legend .u-value { min-width:48px; }
+  dialog { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:10px; width:min(760px,94vw); padding:14px; }
+  dialog::backdrop { background:#0008; }
+  #list { height:52vh; overflow:auto; border:1px solid var(--line); border-radius:6px; margin-top:8px; padding:4px 8px; }
+  #list h4 { margin:8px 0 2px; font-size:12px; color:var(--mute); text-transform:uppercase; letter-spacing:.04em; }
+  #list label { display:flex; gap:6px; padding:1px 0; cursor:pointer; }
+  #list label span.u { color:var(--mute); margin-left:auto; }
+  .empty { color:var(--mute); padding:40px; text-align:center; }
+  @media (max-width:800px) { .grid { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<div class="bar">
+  <b>CAN Logger</b><a href="/">Live</a><a href="/history">Recorded data</a><a href="/grafana"><u>Charts</u></a>
+  <select id="vin"></select><select id="ses"></select>
+  <span id="modes"><button id="mLive">Live</button> <button id="mRec">Recorded</button></span>
+  <select id="win"><option value="60">last 1 min</option><option value="300" selected>last 5 min</option>
+    <option value="900">last 15 min</option><option value="3600">last 1 h</option></select>
+  <button id="reset" style="display:none">Reset zoom</button>
+  <span class="sp"></span><span class="sub" id="status"></span>
+  <button id="add">+ Add panel</button><button id="defaults">Default layout</button>
+</div>
+<main>
+  <div class="tiles" id="tiles"></div>
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty" style="display:none"></div>
+</main>
+
+<dialog id="dlg">
+  <div style="display:flex;gap:8px;align-items:center">
+    <b id="dtitle">Signals</b><input type="text" id="dname" placeholder="panel title" style="flex:1">
+  </div>
+  <div style="display:flex;gap:10px;align-items:center;margin-top:8px">
+    <input type="text" id="dflt" placeholder="filter, e.g. pack, speed, 1DB" style="flex:1">
+    <label class="sub"><input type="checkbox" id="dconst"> include constant signals</label>
+    <span class="sub" id="dcount"></span>
+  </div>
+  <div id="list"></div>
+  <div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end">
+    <button id="dcancel">Cancel</button><button id="dok" class="on">Apply</button>
+  </div>
+</dialog>
+
+<script src="/vendor/uPlot.iife.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const COLORS = ["#4e9af1","#f1a14e","#5fd18a","#e5606e","#b68cf0","#4ed1d1","#e6d34e","#e07ac0","#9bd14e","#8a93a3"];
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let cars = [], mode = "live", D = null, zoom = null, panels = [], charts = [], tilesKeys = [], timer = null, editing = null;
+const sync = uPlot.sync("g");
+
+const store = {
+  get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+};
+const fmtN = v => v == null ? "–" : Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : (+v.toPrecision(5)).toString();
+const day = t => new Date(t * 1000).toLocaleDateString([], {day: "numeric", month: "short"});
+const clock = t => new Date(t * 1000).toLocaleTimeString([], {hour12: false});
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const sigOf = key => D && D.map[key];
+const constant = s => { let a, b; for (const x of s.v) if (x != null) { a = a == null ? x : Math.min(a, x); b = b == null ? x : Math.max(b, x); } return a === b; };
+
+// ── default layout: matched by name, so it fits both the ZE0 and the ZE1 signal sets ──────────
+const T = (label, re) => ({label, re});
+const DEFAULT_TILES = [
+  T("Speed", /Polled · Drive\|Speed$/), T("State of charge", /Polled · Battery\|State of charge$|x55B · LB_SOC$/),
+  T("Pack voltage", /Polled · Battery\|Pack voltage$|x1DB · LB_Total_Voltage$/), T("Pack current", /Pack current \(1\)$|x1DB · LB_Current$/),
+  T("Motor power", /Drive\|Motor power$/), T("Motor speed", /Drive\|Motor speed$/), T("Cell spread", /Cell voltage spread$/),
+  T("Pack temp 1", /Pack temperature 1$/), T("Motor temp", /Drive\|Motor temperature$/), T("12 V battery", /Vehicle\|12 V battery$/),
+  T("Odometer", /Vehicle\|Odometer$/), T("State of health", /State of health$/),
+];
+const DEFAULT_PANELS = [
+  {title: "Speed, motor speed, torque", res: [/Drive\|Speed$/, /Drive\|Motor speed$/, /Drive\|Motor torque$/], wide: false},
+  {title: "Power and pack current", res: [/Drive\|Motor power$/, /Pack current \(\d\)$|x1DB · LB_Current$/, /Auxiliary power$|A\/C system power$|Heater power estimate$/], wide: false},
+  {title: "Pack voltage and state of charge", res: [/Pack voltage$|x1DB · LB_Total_Voltage$/, /State of charge$|x55B · LB_SOC$/], wide: false},
+  {title: "Cell voltage min / max / average (mV)", res: [/Cell voltage (min|max|average)$/], wide: false},
+  {title: "Cell voltage spread (mV)", res: [/Cell voltage spread$/, /Module voltage spread$/], wide: false},
+  {title: "Temperatures", res: [/Pack temperature \d$/, /Motor temperature$/, /Ambient temperature$/, /Inverter|Coolant/i], wide: false},
+  {title: "Pedals and steering", res: [/Accelerator pedal$/, /Brake pedal$/, /Steering wheel angle$/], wide: false},
+  {title: "12 V system", res: [/Vehicle\|12 V battery/], wide: false},
+  {title: "Tyre pressures", res: [/Tyre pressure/], wide: false},
+  {title: "All 96 cell voltages", res: [/Polled · Cell voltages\|Cell/], wide: true},
+];
+function resolve(res) {
+  const keys = [];
+  for (const re of res) for (const s of D.signals) {
+    const id = s.group + "|" + s.name;
+    if (re.test(id) && !keys.includes(s.key)) keys.push(s.key);
+  }
+  return keys;
+}
+function defaultLayout() {
+  panels = DEFAULT_PANELS.map(p => ({title: p.title, keys: resolve(p.res), wide: p.wide})).filter(p => p.keys.length);
+  tilesKeys = DEFAULT_TILES.map(t => { const s = D.signals.find(s => t.re.test(s.group + "|" + s.name)); return s && {label: t.label, key: s.key}; }).filter(Boolean);
+  save();
+}
+function save() { store.set("charts.v1", {panels, tilesKeys}); }
+
+// ── data ────────────────────────────────────────────────────────────────────────────────────
+async function load() {
+  const sel = $("ses").value;
+  let url;
+  if (mode === "live") url = `/api/series?last=${$("win").value}&points=600`;
+  else if (zoom) url = `/api/series?conn=${sel}&from=${zoom[0]}&to=${zoom[1]}&points=900`;
+  else url = `/api/series?conn=${sel}&points=900`;
+  $("status").textContent = "loading…";
+  let d;
+  try { d = await (await fetch(url, {cache: "no-store"})).json(); } catch (e) { $("status").textContent = "server unreachable"; return; }
+  if (d.active === false) { D = null; render(); $("status").textContent = "no active session"; return; }
+  d.map = {}; d.signals.forEach(s => d.map[s.key] = s);
+  const first = !D;
+  D = d;
+  if (first || !panels.length) {
+    const saved = store.get("charts.v1");
+    if (saved && saved.panels && saved.panels.length) { panels = saved.panels; tilesKeys = saved.tilesKeys || []; } else defaultLayout();
+  }
+  $("status").textContent = `${D.signals.length} signals · ${clock(D.t0)}–${clock(D.t1)} · ${D.step.toFixed(2)} s/point` + (D.live ? " · live" : "");
+  render();
+}
+
+// ── drawing ─────────────────────────────────────────────────────────────────────────────────
+function render() {
+  const live = D && D.live;
+  $("empty").style.display = D ? "none" : "";
+  if (!D) { $("empty").textContent = mode === "live" ? "No live session. Switch to Recorded data." : "No recorded sessions."; }
+  tiles(); updateCharts();
+}
+
+function tiles() {
+  $("tiles").innerHTML = D ? tilesKeys.map(t => {
+    const s = sigOf(t.key);
+    if (!s) return "";
+    let v = null, i = s.v.length;
+    while (i-- > 0 && v == null) v = s.v[i];
+    const vals = s.v.filter(x => x != null);
+    const lo = Math.min(...vals), hi = Math.max(...vals), n = s.v.length;
+    const pts = s.v.map((x, k) => x == null ? null : `${(k / (n - 1) * 100).toFixed(1)},${(24 - (hi === lo ? 12 : (x - lo) / (hi - lo) * 22)).toFixed(1)}`).filter(Boolean).join(" ");
+    return `<div class="tile" title="${esc(s.group + " · " + s.name)}"><div class="n">${esc(t.label)}</div>
+      <div class="v">${fmtN(v)} <small>${esc(s.unit)}</small></div>
+      <svg viewBox="0 0 100 26" preserveAspectRatio="none"><polyline fill="none" stroke="${css("--accent")}" stroke-width="1.5" vector-effect="non-scaling-stroke" points="${pts}"/></svg></div>`;
+  }).join("") + `<div class="tile"><div class="n">GPS position</div><div class="sub" style="padding-top:8px">placeholder: no GPS source yet</div></div>` : "";
+}
+
+function updateCharts() {
+  const grid = $("grid");
+  if (!D) { charts.forEach(c => c && c.u.destroy()); charts = []; grid.innerHTML = ""; return; }
+  // rebuild the DOM only when the set of panels changed; otherwise just feed new data
+  const sig = JSON.stringify(panels) + "|" + (zoom ? "z" : "");
+  if (grid.dataset.sig !== sig) {
+    charts.forEach(c => c && c.u.destroy()); charts = [];
+    grid.dataset.sig = sig;
+    grid.innerHTML = `<div class="panel"><h3>GPS position <span class="sub">placeholder</span></h3>
+      <div class="gps"><div style="font-size:15px">Map / GPS track</div><div>no GPS source on the logger yet</div></div></div>` +
+      panels.map((p, i) => `<div class="panel${p.wide ? " wide" : ""}" id="p${i}"><h3><span>${esc(p.title)}</span><span class="sp"></span>
+        <button data-a="edit" data-i="${i}">signals</button><button data-a="wide" data-i="${i}">${p.wide ? "narrow" : "wide"}</button>
+        <button data-a="tile" data-i="${i}" title="show the first signal as a tile">tile</button><button data-a="del" data-i="${i}">×</button></h3>
+        <div class="c" id="c${i}"></div></div>`).join("");
+    panels.forEach((p, i) => charts[i] = makeChart(i, p));
+  } else panels.forEach((p, i) => charts[i] && charts[i].u.setData(dataFor(p), true));
+  if (zoom) charts.forEach(c => c && c.u.setScale("x", {min: D.t0, max: D.t1}));
+}
+
+function dataFor(p) {
+  const keys = p.keys.filter(k => sigOf(k));
+  return [D.t, ...keys.map(k => sigOf(k).v)];
+}
+
+function makeChart(i, p) {
+  const el = $("c" + i);
+  const keys = p.keys.filter(k => sigOf(k));
+  if (!keys.length) { el.innerHTML = `<div class="sub" style="padding:30px 0;text-align:center">No signals of this panel in this session.</div>`; return null; }
+  const units = [...new Set(keys.map(k => sigOf(k).unit || "–"))];
+  const fg = css("--mute"), grid = css("--grid");
+  const axis = (scale, side) => ({scale, side, stroke: fg, grid: {stroke: grid, width: 1}, ticks: {stroke: grid}, size: 56, label: scale === "–" ? "" : scale});
+  const axes = [{stroke: fg, grid: {stroke: grid, width: 1}, ticks: {stroke: grid}}, axis(units[0], 3)];
+  if (units[1]) axes.push({...axis(units[1], 1), grid: {show: false}});
+  const series = [{}, ...keys.map((k, n) => {
+    const s = sigOf(k);
+    return {label: s.name, scale: s.unit || "–", stroke: COLORS[n % COLORS.length], width: 1.5, spanGaps: true, points: {show: false},
+            value: (u, v) => v == null ? "–" : fmtN(v) + (s.states[String(v)] ? " " + s.states[String(v)] : "")};
+  })];
+  const scales = {x: {time: true}};
+  units.forEach(u => scales[u] = {});
+  const opts = {width: el.clientWidth || 500, height: 260, cursor: {sync: {key: sync.key}, drag: {x: true, y: false, setScale: false}},
+    scales, axes, series, legend: {live: true}, hooks: {setSelect: [u => {
+      if (u.select.width < 8) return;
+      const a = u.posToVal(u.select.left, "x"), b = u.posToVal(u.select.left + u.select.width, "x");
+      u.setSelect({width: 0, height: 0}, false);
+      if (mode === "live") return;
+      zoom = [a, b]; $("reset").style.display = ""; load();
+    }]}};
+  const u = new uPlot(opts, dataFor(p), el);
+  new ResizeObserver(() => u.setSize({width: el.clientWidth, height: 260})).observe(el);
+  return {u};
+}
+
+// ── controls ────────────────────────────────────────────────────────────────────────────────
+$("grid").onclick = e => {
+  const b = e.target.closest("button"); if (!b) return;
+  const i = +b.dataset.i, p = panels[i];
+  if (b.dataset.a === "del") panels.splice(i, 1);
+  else if (b.dataset.a === "wide") p.wide = !p.wide;
+  else if (b.dataset.a === "tile") { const s = sigOf(p.keys[0]); if (s && !tilesKeys.some(t => t.key === s.key)) tilesKeys.push({label: s.name, key: s.key}); }
+  else if (b.dataset.a === "edit") return openPicker(i);
+  save(); render();
+};
+$("tiles").ondblclick = e => {            // double-click a tile to remove it
+  const t = e.target.closest(".tile"); if (!t || !t.title) return;
+  const k = tilesKeys.findIndex(x => { const s = sigOf(x.key); return s && s.group + " · " + s.name === t.title; });
+  if (k >= 0) { tilesKeys.splice(k, 1); save(); render(); }
+};
+$("add").onclick = () => openPicker(-1);
+$("defaults").onclick = () => { if (D) { defaultLayout(); $("grid").dataset.sig = ""; render(); } };
+$("reset").onclick = () => { zoom = null; $("reset").style.display = "none"; load(); };
+
+function setMode(m) {
+  mode = m; zoom = null; $("reset").style.display = "none";
+  $("mLive").classList.toggle("on", m === "live"); $("mRec").classList.toggle("on", m === "rec");
+  $("win").style.display = m === "live" ? "" : "none";
+  $("vin").style.display = $("ses").style.display = m === "rec" ? "" : "none";
+  clearInterval(timer);
+  D = null; $("grid").dataset.sig = "";
+  load();
+  if (m === "live") timer = setInterval(load, 3000);
+}
+$("mLive").onclick = () => setMode("live");
+$("mRec").onclick = () => setMode("rec");
+$("win").onchange = load;
+$("ses").onchange = () => { zoom = null; $("reset").style.display = "none"; D = null; $("grid").dataset.sig = ""; load(); };
+$("vin").onchange = fillSessions;
+
+async function loadCars() {
+  cars = (await (await fetch("/api/cars", {cache: "no-store"})).json())
+    .map(c => ({...c, connections: c.connections.filter(x => x.frames > 0)})).filter(c => c.connections.length)
+    .sort((a, b) => Math.max(...b.connections.map(x => x.end)) - Math.max(...a.connections.map(x => x.end)));
+  $("vin").innerHTML = cars.map((c, i) => `<option value="${i}">${esc(c.vin || "VIN unknown")}</option>`).join("");
+  if (cars.length) fillSessions(true);
+}
+function fillSessions(initial) {
+  const c = cars[$("vin").value];
+  $("ses").innerHTML = c.connections.slice().sort((a, b) => b.start - a.start).map(x =>
+    `<option value="${x.id}">${day(x.start)} ${clock(x.start)}–${clock(x.end)} · ${Math.round((x.end - x.start) / 60)} min</option>`).join("");
+  if (initial !== true) $("ses").onchange();
+}
+
+// ── signal picker ───────────────────────────────────────────────────────────────────────────
+function openPicker(i) {
+  if (!D) return;
+  editing = i;
+  $("dtitle").textContent = i < 0 ? "New panel" : "Panel signals";
+  $("dname").value = i < 0 ? "" : panels[i].title;
+  $("dflt").value = ""; $("dconst").checked = false;
+  window._sel = new Set(i < 0 ? [] : panels[i].keys);
+  drawList(); $("dlg").showModal();
+}
+function drawList() {
+  const f = $("dflt").value.trim().toLowerCase(), all = $("dconst").checked;
+  const cur = D.signals.filter(s => window._sel.has(s.key) || ((all || !constant(s)) && (!f || (s.group + " " + s.name + " " + s.unit).toLowerCase().includes(f))));
+  let g = "", html = "";
+  for (const s of cur) {
+    if (s.group !== g) { g = s.group; html += `<h4>${esc(g)}</h4>`; }
+    html += `<label><input type="checkbox" data-k="${esc(s.key)}"${window._sel.has(s.key) ? " checked" : ""}>${esc(s.name)}<span class="u">${esc(s.unit)}</span></label>`;
+  }
+  $("list").innerHTML = html || `<div class="empty">Nothing matches.</div>`;
+  $("dcount").textContent = `${cur.length} shown · ${window._sel.size} selected`;
+}
+$("dflt").oninput = $("dconst").onchange = drawList;
+$("list").onchange = e => { const k = e.target.dataset.k; if (k) { e.target.checked ? window._sel.add(k) : window._sel.delete(k); $("dcount").textContent = `${window._sel.size} selected`; } };
+$("dcancel").onclick = () => $("dlg").close();
+$("dok").onclick = () => {
+  const keys = [...window._sel];
+  if (keys.length) {
+    const title = $("dname").value.trim() || (sigOf(keys[0]) ? sigOf(keys[0]).name : "Panel");
+    if (editing < 0) panels.push({title, keys, wide: keys.length > 12}); else Object.assign(panels[editing], {title, keys});
+    save(); render();
+  }
+  $("dlg").close();
+};
+
+loadCars().then(() => setMode("live"));
+</script>
+</body>
+</html>

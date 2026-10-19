@@ -17,7 +17,7 @@ GET  /stats, /frames   raw access
 Run:  python3 server.py [--port 8000] [--db canlog.db]
 """
 import argparse, json, os, re, sqlite3, struct, threading, time
-import decode, export
+import decode, export, series
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -519,6 +519,40 @@ class H(BaseHTTPRequestHandler):
             cid = int(q["conn"][0]) if "conn" in q else None
             at = float(q["at"][0]) if "at" in q else None
             return self._send(200, json.dumps(decoded(cid, at)).encode())
+        if u.path == "/api/series":                # chart page: every decodable value over a time range
+            with db_lock:
+                live = conn["id"] is not None and time.time() - conn["last"] <= ACTIVE_S
+                cid = int(q["conn"][0]) if "conn" in q else (conn["id"] if live else None)
+                is_live = live and cid == conn["id"]
+            if cid is None:
+                return self._send(200, b'{"active": false}')
+            try:
+                t0 = float(q["from"][0]) if "from" in q else None
+                t1 = float(q["to"][0]) if "to" in q else None
+                if "last" in q:                    # the last N seconds of the session
+                    if t1 is None:
+                        t1 = time.time() if is_live else None
+                    if t1 is None:
+                        with db_lock:
+                            row = db.execute("SELECT end_t FROM connections WHERE id=?", (cid,)).fetchone()
+                        t1 = row[0] if row else None
+                    t0 = t1 - float(q["last"][0]) if t1 is not None else None
+                elif t1 is None and is_live:
+                    t1 = time.time()
+                pts = int(q.get("points", ["600"])[0])
+            except ValueError:
+                return self._send(400)
+            out = series.series(DB_PATH, cid, CHANNELS, t0, t1, pts)
+            if out is None:
+                return self._send(404, b"no such session", "text/plain")
+            out["conn"], out["live"] = cid, is_live
+            return self._send(200, json.dumps(out, separators=(",", ":")).encode())
+        if u.path in ("/vendor/uPlot.iife.min.js", "/vendor/uPlot.min.css"):
+            name = u.path.rsplit("/", 1)[1]
+            return self._send(200, open(os.path.join(HERE, "vendor", name), "rb").read(),
+                              "application/javascript" if name.endswith(".js") else "text/css")
+        if u.path in ("/grafana", "/grafana.html"):
+            return self._send(200, open(os.path.join(HERE, "grafana.html"), "rb").read(), "text/html; charset=utf-8")
         if u.path == "/api/cars":
             return self._send(200, json.dumps(cars(), indent=1).encode())
         if u.path == "/api/export":                # a recorded session as a file: format=log (gzip text) or md
