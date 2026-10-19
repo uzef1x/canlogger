@@ -170,6 +170,16 @@ async function tickDecoded() {
   } catch (e) {}
 }
 
+// How far behind real time the newest data is: the age of the newest frame on any channel, by the
+// board's own clock. It grows while the buses are silent, and while a backlog is still uploading.
+function lagText(d) {
+  const lag = d.channels.reduce((m, c) => c.last_age == null ? m : Math.min(m, c.last_age), Infinity);
+  if (lag === Infinity) return "no data yet";
+  const col = lag < 5 ? "ok" : lag < 20 ? "warn" : "bad";
+  const txt = lag < 1 ? "under 1 s" : lag < 10 ? lag.toFixed(1) + " s" : lag < 120 ? Math.round(lag) + " s" : Math.round(lag / 60) + " min";
+  return `<b style="color:var(--${col})">data ${txt} behind</b>`;
+}
+
 let pageVersion = null;
 async function tick() {
   try {
@@ -180,7 +190,7 @@ async function tick() {
     $("live").style.display = d.active ? "" : "none";
     $("none").style.display = d.active ? "none" : "";
     if (d.active) render(d);
-    $("conn").textContent = d.active ? "live · " + new Date().toLocaleTimeString() : "";
+    $("conn").innerHTML = d.active ? "live · " + new Date().toLocaleTimeString() + " · " + lagText(d) : "";
   } catch (e) {
     $("conn").textContent = "server unreachable";
   }

@@ -23,6 +23,7 @@ from urllib.parse import urlparse, parse_qs
 
 HDR = struct.Struct("<IBBHIQI")       # v1: magic, board, ver, count, boot_id, t_send_us, dropped
 HDR2 = struct.Struct("<IBBHIQIb3x")   # v2: v1 + rssi (dBm) + 3 pad
+HDR3 = struct.Struct("<IBBHIQIb3xQ")  # v5: v2 + t_wall_us (the board's NTP wall clock at t_send_us)
 REC = struct.Struct("<QIBBBB8s")      # ts_us, id, ch, flags, dlc, reserved, data
 MAGIC = 0x31474C43
 
@@ -451,13 +452,14 @@ class H(BaseHTTPRequestHandler):
         if len(body) < HDR.size:
             return self._send(400)
         ver = body[5]
-        hdr = HDR2 if ver >= 2 else HDR
-        if ver not in (1, 2, 3, 4) or len(body) < hdr.size:
+        hdr = HDR3 if ver >= 5 else HDR2 if ver >= 2 else HDR
+        if ver not in (1, 2, 3, 4, 5) or len(body) < hdr.size:
             return self._send(400)
         vals = hdr.unpack_from(body)
         magic, board, _, count, boot_id, t_send, dropped = vals[:7]
         rssi = vals[7] if ver >= 2 else None
-        if magic != MAGIC:
+        t_wall = vals[8] / 1e6 if ver >= 5 else None
+        if magic != MAGIC or (t_wall is not None and t_wall < 1.7e9):   # v5 with the clock not set: refuse
             return self._send(400)
         if ver >= 3:
             got = (decode_v3 if ver == 3 else decode_v4)(body, hdr.size, count)
@@ -465,14 +467,17 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400)
         elif len(body) != hdr.size + count * REC.size:
             return self._send(400)
-        # Device clock -> wall clock: the batch was sent at device time t_send and
-        # received at `rx`, so wall = rx - (t_send - ts)/1e6 (error ~ one-way latency).
+        # Device clock -> wall clock. v5: the board stamped its own wall clock (t_wall) at device time
+        # t_send, so wall = t_wall - (t_send - ts)/1e6 and the server's clock is not involved.
+        # Older firmware has no wall clock: the batch is taken to have been sent at `rx` (wrong by the
+        # time the upload took).
+        anchor = t_wall if t_wall is not None else rx
         if ver < 3:
             got = []
             for i in range(count):
                 ts, fid, ch, flags, dlc, _, data = REC.unpack_from(body, hdr.size + i * REC.size)
                 got.append((ts, fid, ch, flags, dlc, data[:dlc]))
-        recs = [(rx - (t_send - ts) / 1e6, board, boot_id, ch, fid, flags, dlc, data)
+        recs = [(anchor - (t_send - ts) / 1e6, board, boot_id, ch, fid, flags, dlc, data)
                 for ts, fid, ch, flags, dlc, data in got]
         with db_lock:
             cid = touch_conn(rx, board, boot_id)

@@ -12,6 +12,7 @@
 #include "ca_cert.h"
 #include "esp_timer.h"
 #include "esp_system.h"
+#include <sys/time.h>
 
 static uint32_t g_boot_id;
 static volatile uint32_t g_sent = 0;
@@ -136,7 +137,7 @@ static void uplink_task(void *) {
       WiFi.begin(WIFI_SSID, WIFI_PASS);
       down_since = millis();
     }
-    if (uplink_connected() && server_url().startsWith("https://") && !clock_ok()) {
+    if (uplink_connected() && !clock_ok()) {
       vTaskDelay(pdMS_TO_TICKS(500));    // waiting for NTP: a TLS certificate cannot be checked without the date
       continue;
     }
@@ -155,7 +156,10 @@ static void uplink_task(void *) {
     h.version = LOG_VERSION;
     h.count = (uint16_t)used;
     h.boot_id = g_boot_id;
-    h.t_send_us = (uint64_t)esp_timer_get_time();   // stamped as late as possible
+    struct timeval tv;                               // wall clock and device clock read at the same instant
+    gettimeofday(&tv, nullptr);
+    h.t_send_us = (uint64_t)esp_timer_get_time();
+    h.t_wall_us = (uint64_t)tv.tv_sec * 1000000ull + (uint64_t)tv.tv_usec;
     h.dropped = ring_dropped();
     h.rssi = (int8_t)WiFi.RSSI();
     h.pad[0] = h.pad[1] = h.pad[2] = 0;
